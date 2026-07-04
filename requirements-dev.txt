@@ -1,0 +1,6 @@
+# Development/test dependencies (NOT deployed to Lambda)
+# NOTE: comments kept ASCII for cp949 locale safety.
+-r requirements.txt
+pytest>=8.0.0           # unit tests
+pytest-asyncio>=0.23.0  # async handler tests
+moto[dynamodb]>=5.0     # DynamoDB mock for unit tests

@@ -21,6 +21,12 @@ RETRY_WAIT_SECONDS: int = 2
 # 단일 httpx 요청 타임아웃(초)
 REQUEST_TIMEOUT: float = 10.0
 
+# Telegram sendMessage 본문 최대 길이 — 초과 시 400 (발송 전 안전 절단)
+TELEGRAM_MESSAGE_LIMIT: int = 4096
+
+# 절단 시 덧붙일 안내 꼬리 (MarkdownV2 특수문자 사전 이스케이프 완료 문자열)
+_TRUNCATION_SUFFIX: str = "\n…\\(내용이 길어 일부 생략\\)"
+
 
 class TelegramSendError(Exception):
     """RETRY_COUNT 재시도 후에도 발송에 실패했을 때 raise."""
@@ -29,6 +35,33 @@ class TelegramSendError(Exception):
 def _build_send_message_url() -> str:
     """sendMessage 엔드포인트 URL을 생성한다."""
     return f"{TELEGRAM_API_BASE_URL}/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+
+
+def _truncate_message(text: str) -> str:
+    """4096자 초과 메시지를 Telegram 한도 내로 안전하게 절단한다.
+
+    MarkdownV2 이스케이프 시퀀스(``\\X``) 중간을 자르면 꼬리에 백슬래시가 남아
+    파싱 400이 발생하므로, 절단 지점 끝의 홀수 개 백슬래시를 제거한 뒤
+    사전 이스케이프된 안내 꼬리를 덧붙인다.
+    """
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return text
+
+    allowed_length = TELEGRAM_MESSAGE_LIMIT - len(_TRUNCATION_SUFFIX)
+    truncated = text[:allowed_length]
+
+    # 끝의 백슬래시 연속 개수가 홀수면 이스케이프가 반토막 — 하나 제거
+    trailing_backslashes = len(truncated) - len(truncated.rstrip("\\"))
+    if trailing_backslashes % 2 == 1:
+        truncated = truncated[:-1]
+
+    logger.warning(
+        "Telegram 메시지 %d자 → %d자로 절단 (한도 %d자)",
+        len(text),
+        len(truncated) + len(_TRUNCATION_SUFFIX),
+        TELEGRAM_MESSAGE_LIMIT,
+    )
+    return truncated + _TRUNCATION_SUFFIX
 
 
 def _post_message(chat_id: str, text: str) -> None:
@@ -43,7 +76,7 @@ def _post_message(chat_id: str, text: str) -> None:
     url = _build_send_message_url()
     payload = {
         "chat_id": chat_id,
-        "text": text,
+        "text": _truncate_message(text),
         "parse_mode": "MarkdownV2",
     }
     response = httpx.post(url, json=payload, timeout=REQUEST_TIMEOUT)
