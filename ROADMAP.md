@@ -14,21 +14,22 @@
 - [x] 1-1 (S) naver.me 리다이렉트 추적 → place_id 추출 규칙 실측 확정 (`pinId` 쿼리 파라미터)
 - [x] 1-2 (S) 리뷰 엔드포인트·페이지네이션·응답 스키마 실측 확정 (`experiments/findings.md`, 덤프 검증 완료)
 - [x] 1-3 (A) 게이트 판정: **httpx 단독 구현 가능 — Playwright 불필요** (50건 덤프 직접 검증)
-- [ ] 1-4 (D) `naver_review_collector.py` 구현: place_id 해석 + 리뷰 50개 수집 + 파서, mock 단위 테스트 + `-m live` 실측 테스트
+- [x] 1-4 (D) `naver_review_collector.py` 구현: place_id 해석 + 리뷰 50개 수집 + 파서, mock 단위 테스트 + `-m live` 실측 테스트
 - [ ] 1-5 (A) 검증: 실제 URL(돈멜 본점)로 리뷰 50개 수집을 직접 실행 확인 → 커밋
+  - 2026-07-04 1차 시도: resolve_place 성공(pinId 33099281), fetch_place_detail에서 429 — 탐사 시 인트로스펙션이 유발한 IP 쿨다운 미회복. 코드는 설계대로 무재시도 즉시 중단. 쿨다운 후 재시도 예정
 
 ## Phase 2 — 분석·응답 파이프라인
 
-- [ ] 2-1 (D) `review_analyst.py`: Claude JSON 구조화 출력(총평·장단점·메뉴별 추천도), 파싱 실패 폴백
-- [ ] 2-2 (D) `review_formatter.py`: 분석 JSON → MarkdownV2 응답 포맷 (캐시 히트 문구 포함)
-- [ ] 2-3 (D) `command_router.py`: URL 추출, /update·/start·/help 라우팅, Worker 이벤트 계약
-- [ ] 2-4 (A) 검증: 실측 리뷰 덤프로 Claude 호출해 요약·메뉴 추천 품질 육안 확인, 이스케이프 테스트 통과 → 커밋
+- [x] 2-1 (D) `review_analyst.py`: Claude JSON 구조화 출력(총평·장단점·메뉴별 추천도), 파싱 실패 폴백
+- [x] 2-2 (D) `review_formatter.py`: 분석 JSON → MarkdownV2 응답 포맷 (캐시 히트 문구 포함)
+- [x] 2-3 (D) `command_router.py`: URL 추출, /update·/start·/help 라우팅, Worker 이벤트 계약 (Phase 0에서 선반영 완료)
+- [x] 2-4 (A) 검증: 실측 리뷰 덤프(50건)를 MockTransport로 프로덕션 파서에 통과 + Claude 실호출 — 요약·메뉴 추천 품질 우수 확인, 이스케이프 정상 → 커밋
 
 ## Phase 3 — 캐시·/update 흐름
 
-- [ ] 3-1 (D) `dynamo_writer.py`: 캐시 read/write, `last#<chat_id>` 항목, float→Decimal
-- [ ] 3-2 (D) `worker_handler.py` 통합: 캐시 히트/미스/update 분기 완성
-- [ ] 3-3 (A) 검증: moto mock으로 3개 시나리오(신규/히트/update) 테스트 통과 → 커밋
+- [x] 3-1 (D) `dynamo_writer.py`: 캐시 read/write, `last#<chat_id>` 항목, float→Decimal (Phase 0에서 선반영)
+- [x] 3-2 (D) `worker_handler.py` 통합: 캐시 히트/미스/update 분기 완성 (Phase 2에서 선반영)
+- [x] 3-3 (A) 검증: moto·mock으로 3개 시나리오(신규/히트/update) 테스트 커버 확인, 84 passed → 커밋
 
 ## Phase 4 — 배포·E2E
 
