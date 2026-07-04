@@ -1,0 +1,9 @@
+# Runtime dependencies
+# NOTE: comments kept ASCII so `sam build` (pip) does not fail under cp949 locale.
+boto3>=1.34.0           # AWS Secrets Manager / DynamoDB
+httpx>=0.27.0           # Naver / Telegram HTTP client (do not add other HTTP clients)
+anthropic>=0.49.0       # Claude API - review summarization
+beautifulsoup4>=4.12    # HTML parser - Naver review scraping; HTTP stays httpx
+python-dotenv>=1.0.0    # local .env loading
+pytest>=8.0.0           # unit tests
+pytest-asyncio>=0.23.0  # async handler tests

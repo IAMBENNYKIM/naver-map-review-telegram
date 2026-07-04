@@ -1,0 +1,14 @@
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "naver-map-review-telegram"
+resolve_s3 = true
+s3_prefix = "naver-map-review-telegram"
+region = "ap-northeast-2"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = "TablePrefix=\"prod_\" SecretsName=\"naver-review/production\""
+image_repositories = []
+
+[default.global.parameters]
+region = "ap-northeast-2"

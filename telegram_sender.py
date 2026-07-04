@@ -1,0 +1,195 @@
+"""Telegram 발송 (공유 모듈).
+
+온디맨드 응답용 send_reply + 실패 시 RETRY_COUNT 재시도, 최종 실패 시 개발자에게 에러 알림.
+send_all은 다중 Chat ID 순차 발송(정기 브로드캐스트가 필요할 때 사용).
+"""
+
+import logging
+import time
+
+import httpx
+
+import config
+
+logger = logging.getLogger(__name__)
+
+# Telegram API 엔드포인트 기본 주소
+TELEGRAM_API_BASE_URL: str = "https://api.telegram.org"
+
+# 재시도 대기 시간(초) — 일반 실패 시 적용
+RETRY_WAIT_SECONDS: int = 2
+
+# 단일 httpx 요청 타임아웃(초)
+REQUEST_TIMEOUT: float = 10.0
+
+
+class TelegramSendError(Exception):
+    """RETRY_COUNT 재시도 후에도 발송에 실패했을 때 raise."""
+
+
+def _build_send_message_url() -> str:
+    """sendMessage 엔드포인트 URL을 생성한다."""
+    return f"{TELEGRAM_API_BASE_URL}/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+
+
+def _post_message(chat_id: str, text: str) -> None:
+    """단일 Chat ID에 메시지 1건을 발송한다.
+
+    HTTP 상태 코드에 따라 특수 처리를 수행하며, 실패 시 예외를 raise한다.
+
+    Raises:
+        httpx.HTTPStatusError: 400/403/기타 4xx~5xx 응답 시.
+        httpx.HTTPError: 연결·타임아웃 등 네트워크 수준 오류 시.
+    """
+    url = _build_send_message_url()
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "MarkdownV2",
+    }
+    response = httpx.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+
+    # HTTP 429 Too Many Requests: Retry-After 헤더 값만큼 대기 후 호출자에게 예외 전파
+    if response.status_code == 429:
+        retry_after = int(response.headers.get("Retry-After", RETRY_WAIT_SECONDS))
+        logger.warning(
+            "Telegram API 429 Too Many Requests — %d초 대기 후 재시도 (chat_id=%s)",
+            retry_after,
+            chat_id,
+        )
+        time.sleep(retry_after)
+        # 재시도는 호출자(_send_with_retry)가 담당하므로 여기서는 예외 raise
+        response.raise_for_status()
+
+    # HTTP 403 Forbidden: 봇이 채팅에서 차단됨
+    if response.status_code == 403:
+        logger.error(
+            "Telegram API 403 Forbidden — 봇이 채팅에서 차단됨 (chat_id=%s)",
+            chat_id,
+        )
+        response.raise_for_status()
+
+    # HTTP 400 Bad Request: MarkdownV2 이스케이프 문제 가능성 — 본문을 로깅
+    if response.status_code == 400:
+        logger.error(
+            "Telegram API 400 Bad Request — MarkdownV2 이스케이프 오류 가능성 "
+            "(chat_id=%s, 응답 본문=%s)",
+            chat_id,
+            response.text,
+        )
+        response.raise_for_status()
+
+    # 기타 4xx/5xx 상태 코드 일괄 처리
+    response.raise_for_status()
+
+
+def _send_with_retry(chat_id: str, text: str) -> bool:
+    """단일 메시지를 최대 RETRY_COUNT회 재시도하며 발송한다.
+
+    Returns:
+        True — 발송 성공, False — RETRY_COUNT회 모두 실패.
+    """
+    last_error: Exception | None = None
+
+    for attempt in range(1, config.RETRY_COUNT + 2):  # 최초 1회 + 재시도 RETRY_COUNT회
+        try:
+            _post_message(chat_id, text)
+            if attempt > 1:
+                logger.info(
+                    "Telegram 발송 성공 (재시도 %d회 후, chat_id=%s)", attempt - 1, chat_id
+                )
+            return True
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            # RETRY_COUNT회가 모두 소진되면 더 이상 대기하지 않는다
+            if attempt <= config.RETRY_COUNT:
+                logger.warning(
+                    "Telegram 발송 실패 (시도 %d/%d, chat_id=%s, 오류=%s) — %d초 후 재시도",
+                    attempt,
+                    config.RETRY_COUNT + 1,
+                    chat_id,
+                    error,
+                    RETRY_WAIT_SECONDS,
+                )
+                time.sleep(RETRY_WAIT_SECONDS)
+            else:
+                logger.error(
+                    "Telegram 발송 최종 실패 (chat_id=%s, 오류=%s)",
+                    chat_id,
+                    last_error,
+                )
+
+    return False
+
+
+def send_all(messages: list[str]) -> bool:
+    """messages를 등록된 모든 Chat ID에 순차 발송한다(정기 브로드캐스트용).
+
+    Returns:
+        True — 전체 발송 성공.
+
+    Raises:
+        TelegramSendError — 하나 이상의 Chat ID 발송 최종 실패 시.
+    """
+    if not config.TELEGRAM_CHAT_IDS:
+        logger.warning("TELEGRAM_CHAT_IDS가 비어 있어 발송 대상이 없습니다.")
+        return True
+
+    실패_chat_ids: list[str] = []
+
+    for chat_id in config.TELEGRAM_CHAT_IDS:
+        for message_text in messages:
+            success = _send_with_retry(chat_id, message_text)
+            if not success and chat_id not in 실패_chat_ids:
+                실패_chat_ids.append(chat_id)
+
+    if 실패_chat_ids:
+        실패_목록 = ", ".join(실패_chat_ids)
+        error_message = f"Telegram 발송 최종 실패 — 실패 Chat ID 목록: {실패_목록}"
+        logger.error(error_message)
+        send_error_alert(error_message)
+        raise TelegramSendError(error_message)
+
+    return True
+
+
+def send_reply(chat_id: str, message: str) -> bool:
+    """온디맨드 응답용 — 특정 Chat ID 한 곳에 메시지 1건을 발송한다.
+
+    허용 목록 검증은 호출자(webhook_handler)가 담당하므로 여기서는 발송만 한다.
+    기존 _send_with_retry(RETRY_COUNT 재시도)를 재사용한다.
+
+    Returns:
+        True — 발송 성공, False — RETRY_COUNT회 모두 실패.
+    """
+    return _send_with_retry(chat_id, message)
+
+
+def send_error_alert(error_msg: str) -> None:
+    """개발자 Chat ID(TELEGRAM_DEVELOPER_CHAT_ID)에만 에러 알림을 발송한다.
+
+    이 함수 자체의 실패는 로깅만 하고 예외를 raise하지 않는다.
+    (에러 알림 실패로 인해 상위 호출 흐름이 중단되는 것을 방지)
+    """
+    developer_chat_id = config.TELEGRAM_DEVELOPER_CHAT_ID
+    if not developer_chat_id:
+        logger.error("TELEGRAM_DEVELOPER_CHAT_ID가 설정되지 않아 에러 알림을 발송할 수 없습니다.")
+        return
+
+    try:
+        url = _build_send_message_url()
+        alert_text = f"[에러 알림]\n{error_msg}"
+        payload = {
+            "chat_id": developer_chat_id,
+            "text": alert_text,
+        }
+        response = httpx.post(url, json=payload, timeout=REQUEST_TIMEOUT)
+        response.raise_for_status()
+        logger.info("개발자에게 에러 알림 발송 완료 (chat_id=%s)", developer_chat_id)
+    except Exception as error:  # noqa: BLE001
+        # 에러 알림 발송 실패는 로깅만 하고 예외를 전파하지 않는다
+        logger.error(
+            "개발자 에러 알림 발송 실패 — 로깅 후 무시 (chat_id=%s, 오류=%s)",
+            developer_chat_id,
+            error,
+        )
