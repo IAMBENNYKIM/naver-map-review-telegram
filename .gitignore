@@ -25,6 +25,15 @@ response.json
 # Claude Code (worktree·로컬 메타)
 .claude/
 
+# Shrimp Task Manager (프로젝트별 task 데이터 · 자체 git 저장소)
+.shrimp/
+
+# 로컬 참고 자료
+ref/
+
+# 스크래핑 탐사 원본 덤프 (대용량·비공개)
+experiments/dumps/
+
 # IDE / OS
 .vscode/
 .idea/

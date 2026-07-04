@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "shrimp-task-manager": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/Benny/workspace/mcp-shrimp-task-manager/dist/index.js"
+      ],
+      "env": {
+        "DATA_DIR": "C:/Users/Benny/workspace/naver-map-review-telegram/.shrimp",
+        "TEMPLATES_USE": "en",
+        "ENABLE_GUI": "false"
+      }
+    }
+  }
+}
