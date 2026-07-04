@@ -91,16 +91,18 @@ REQUIREMENTS.md의 기능을 구현 가능한 수준으로 구체화한다.
 - 모델: `config.ANTHROPIC_MODEL = "claude-sonnet-4-5"` (상수로만 교체).
 - 파싱 실패·API 실패 시 `None` 반환 → 호출자가 폴백 응답 발송 (non-critical).
 
-## 5. 리뷰 dict 계약 (collector → analyst)
+## 5. 리뷰 dict 계약 (collector → analyst) — 2026-07-04 실측 확정
 
 | 키 | 타입 | 필수 |
 |----|------|------|
-| text | str | ✅ 리뷰 본문 |
-| rating | float \| None | 별점 (없으면 None) |
-| date | str \| None | 작성/방문일 |
-| visited_menus | list[str] | 리뷰에 태그된 방문 메뉴 (없으면 빈 리스트) |
+| text | str | ✅ 리뷰 본문 (빈 본문 리뷰는 수집 단계에서 제외) |
+| rating | None | 실측상 개별 리뷰 별점은 항상 null — 필드는 유지하되 None |
+| date | str \| None | 방문일 (`representativeVisitDateTime`, ISO) |
+| keywords | list[str] | 리뷰어가 선택한 키워드 태그 ("음식이 맛있어요" 등) |
 
-리뷰어 닉네임 등 식별 정보는 수집·저장하지 않는다.
+추가로 collector는 **장소 상세 dict**를 제공한다: `place_id`, `name`, `address`, `business_type`, `avg_rating`, `total_reviews`, `menu_stats`(장소 레벨 메뉴 언급 통계 `[{"label", "count"}]` — F4 메뉴 추천도의 보조 근거).
+
+리뷰어 닉네임 등 식별 정보는 수집·저장하지 않는다. 상세 근거는 `experiments/findings.md`.
 
 ## 6. Lambda 구성
 
@@ -117,7 +119,8 @@ Webhook payload → Worker 전달 이벤트: `{"chat_id": int, "action": "analyz
 - MarkdownV2 파싱 오류(400) 0건 — 이스케이프 헬퍼 강제 경유로 보장.
 - 스크래핑 실패 시 개발자 chat으로 에러 알림, 사용자에겐 정중한 실패 안내.
 
-## 8. 리스크 중 미확정 사항 `[UNCERTAIN]`
+## 8. 미확정 사항 해소 (2026-07-04 실측 완료)
 
-- 네이버 리뷰 엔드포인트·페이지네이션·응답 스키마 — Phase 1 실측으로 확정 (ROADMAP Task 1-1~1-3).
-- `visited_menus` 제공 여부는 실측 후 확정. 없으면 F4는 리뷰 본문 텍스트만으로 집계.
+- ~~네이버 리뷰 엔드포인트·페이지네이션·응답 스키마~~ → **확정**: naver.me 리다이렉트 `pinId` → m.place HTML(Apollo state) → pcmap-api GraphQL `getVisitorReviews` `size=50` 1회. httpx 단독 가능, Playwright 불필요. 전문은 `experiments/findings.md`.
+- ~~`visited_menus` 제공 여부~~ → 개별 리뷰에는 없음. F4는 **리뷰 본문 텍스트 + 장소 레벨 `menu_stats`** 를 함께 근거로 집계.
+- 운영 주의: GraphQL 인트로스펙션 금지(즉시 429 차단), 429 시 무재시도 즉시 실패 처리.

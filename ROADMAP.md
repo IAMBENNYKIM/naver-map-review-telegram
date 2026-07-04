@@ -11,9 +11,9 @@
 
 ## Phase 1 — 스크래핑 확정 ⚠️ 게이트
 
-- [ ] 1-1 (S) naver.me 리다이렉트 추적 → place_id 추출 규칙 실측 확정
-- [ ] 1-2 (S) 리뷰 엔드포인트·페이지네이션·응답 스키마 실측 확정 (덤프 `experiments/dumps/`)
-- [ ] 1-3 (A) 조사 보고서 검증: 덤프 확인, httpx 구현 가능 판정 (불가 시 Playwright 전환 결정)
+- [x] 1-1 (S) naver.me 리다이렉트 추적 → place_id 추출 규칙 실측 확정 (`pinId` 쿼리 파라미터)
+- [x] 1-2 (S) 리뷰 엔드포인트·페이지네이션·응답 스키마 실측 확정 (`experiments/findings.md`, 덤프 검증 완료)
+- [x] 1-3 (A) 게이트 판정: **httpx 단독 구현 가능 — Playwright 불필요** (50건 덤프 직접 검증)
 - [ ] 1-4 (D) `naver_review_collector.py` 구현: place_id 해석 + 리뷰 50개 수집 + 파서, mock 단위 테스트 + `-m live` 실측 테스트
 - [ ] 1-5 (A) 검증: 실제 URL(돈멜 본점)로 리뷰 50개 수집을 직접 실행 확인 → 커밋
 
