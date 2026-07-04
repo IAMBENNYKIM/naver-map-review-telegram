@@ -33,10 +33,12 @@
 
 ## Phase 4 — 배포·E2E
 
-- [ ] 4-1 (D) SAM 템플릿 최종화: 2-Lambda, IAM 최소권한(invoke·dynamo·secrets), Outputs
-- [ ] 4-2 (D) `docs/setup-guide.md` 갱신 (2-Lambda 기준)
-- [ ] 4-3 (A) 배포: Secrets Manager 등록 → `sam build && sam deploy` → setWebhook
-- [ ] 4-4 (A) 실기기 E2E: ① URL 공유→요약 수신 ② 재조회→캐시 응답 ③ /update→갱신 → 커밋·완료 보고
+- [x] 4-1 (D) SAM 템플릿 최종화: 2-Lambda, IAM 최소권한(invoke·dynamo·secrets), Outputs
+- [x] 4-2 (D) `docs/setup-guide.md` 갱신 (2-Lambda 기준)
+- [x] 4-3 (A) 배포: Secrets Manager 등록 → `sam deploy --profile naver-review` → setWebhook 등록·검증(ok, 오류 없음)
+  - 신규 IAM 사용자 `naver-review-deployer`(AdministratorAccess)로 배포. TELEGRAM_WEBHOOK_SECRET는 비어 있던 것을 64자 랜덤으로 채움
+  - WebhookApiUrl: `https://5q69qs7tq3.execute-api.ap-northeast-2.amazonaws.com/webhook`
+- [ ] 4-4 (A) 실기기 E2E: ① URL 공유→요약 수신 ② 재조회→캐시 응답 ③ /update→갱신 (사용자 폰에서 전송, Advisor가 로그로 검증)
 
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
