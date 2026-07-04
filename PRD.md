@@ -1,48 +1,123 @@
-# PRD.md — 구현 가능한 MVP 명세
+# PRD.md — MVP 명세
 
-> `REQUIREMENTS.md`를 구현 가능한 명세로 구체화한다. 기능 ID(`F0xx`)·모듈 상세·데이터 모델·리스크.
-> (아래는 골격 스텁 — 실제 명세로 채운다.)
+REQUIREMENTS.md의 기능을 구현 가능한 수준으로 구체화한다.
 
-## 1. MVP 범위
+## 1. 사용자 흐름
 
-Telegram으로 장소명/링크를 받아 네이버 리뷰를 수집하고 Claude로 요약해 응답하는 온디맨드 봇.
+### 신규 조회
+```
+사용자: (네이버지도 공유 텍스트)
+        [네이버지도]
+        돈멜 본점
+        경기 성남시 분당구 느티로63번길 6 1층 돈멜
+        https://naver.me/GB3423bX
 
-## 2. 기능 목록
+봇(즉시): 🔍 돈멜 본점 리뷰를 분석하고 있어요. 잠시만 기다려 주세요.
+봇(10~30초 후):
+        🍽 돈멜 본점
+        📍 경기 성남시 분당구 …
 
-| ID | 기능 | 모듈 | 상태 |
-|----|------|------|------|
-| F001 | Webhook 수신·검증(secret token, chat_id 허용목록) | `webhook_handler.py` | 골격 완료 |
-| F002 | 명령 라우팅(/review·기본=장소명, /help) | `command_router.py` | 골격 완료 |
-| F003 | 네이버 리뷰 수집 | `naver_review_collector.py` | **TODO: 엔드포인트/셀렉터 확정** |
-| F004 | Claude 리뷰 요약(non-critical) | `review_analyst.py` | 골격 완료 |
-| F005 | MarkdownV2 응답 포맷 | `review_formatter.py` | 골격 완료 |
-| F006 | 리뷰 캐시(DynamoDB, TTL) | `dynamo_writer.py` | 골격 완료 |
-| F007 | Telegram 발송·재시도·에러 알림 | `telegram_sender.py` | 골격 완료 |
+        ■ 총평
+        (2~3문장)
+
+        👍 장점  / 👎 단점 (불릿 각 2~4개)
+
+        🍜 메뉴별 추천도
+        ✅ 돈카츠 — 추천 (23회 언급) : 두툼하고 육즙…
+        ⚠️ 카레 — 호불호 (7회 언급) : 향이 강하다는 평…
+        ❌ 우동 — 비추천 (4회 언급) : 불어서 나온다는 평…
+
+        ⚠️ 주의: 웨이팅 30분 이상이라는 언급 다수
+        (리뷰 50개 기준 · 2026-07-04 갱신)
+```
+
+### 캐시 히트
+```
+봇: (저장된 요약 그대로) + "📌 2026-06-20에 분석한 결과예요 (14일 전).
+    최신 리뷰로 다시 분석하려면 /update 를 보내주세요."
+```
+
+### /update
+직전에 조회한 음식점(chat별 기억)을 캐시 무시하고 재수집·재요약.
+
+## 2. 기능 명세
+
+| ID | 기능 | 동작 상세 |
+|----|------|-----------|
+| F1 | URL 처리 | 메시지 텍스트에서 `https://naver.me/...` 정규식 추출. 없으면 사용법 안내. 공유 텍스트의 장소명·주소는 표시용으로 활용하되, 신뢰 원천은 스크래핑 결과 |
+| F2 | 리뷰 수집 | place_id 해석 → 방문자 리뷰 최신순 50개. 50개 미만이면 있는 만큼 (10개 미만 시 응답에 표본 부족 문구) |
+| F3+F4 | 분석 | Claude 1회 호출, 아래 §4 JSON 계약으로 구조화 출력 |
+| F5 | 캐시 | place_id 키로 저장, 만료 없음. 히트 시 Claude·스크래핑 없이 즉시 응답 |
+| F6 | /update | `last#<chat_id>` 항목에서 직전 place_id 조회. 없으면 "먼저 음식점 URL을 보내주세요" |
+| F7 | 접근 제어 | 허용목록 외 chat_id 무시(200), secret token 불일치 403 |
+| F8 | 안내 | /start·/help·URL 없는 텍스트 → 사용법 메시지 |
 
 ## 3. 데이터 모델 (DynamoDB)
 
-### `review_cache` (PK=`place_key`, TTL=`ttl`)
+테이블: `${prefix}review_cache`, PK `place_key`(S), PAY_PER_REQUEST, TTL 미사용.
+
+### 캐시 항목 (`place_key = <place_id>`)
 | 속성 | 타입 | 설명 |
 |------|------|------|
-| place_key | S | 정규화 장소 키(sha256 앞 16자) — PK |
-| summary | S | Claude 요약(없으면 빈 문자열) |
-| reviews | L | 수집 리뷰 dict 리스트 |
-| ttl | N | 만료 epoch(초) — DynamoDB 자동 삭제 |
+| place_key | S | 네이버 place_id |
+| place_name | S | 음식점명 |
+| address | S | 주소 |
+| summary_json | S | §4 분석 결과 JSON 직렬화 |
+| review_count | N | 분석에 사용한 리뷰 수 |
+| updated_at | S | ISO 8601 (KST) |
 
-## 4. 리뷰 dict 계약 (수집기 반환)
+### 최근 조회 항목 (`place_key = "last#<chat_id>"`)
+| 속성 | 타입 | 설명 |
+|------|------|------|
+| place_key | S | `last#<chat_id>` |
+| last_place_id | S | 직전 조회 place_id |
+| updated_at | S | ISO 8601 |
 
-- `text` (str, 필수): 리뷰 본문
-- `rating` (float | None): 별점
-- `author` (str), `date` (str): 선택
+## 4. 분석 출력 계약 (review_analyst → formatter)
 
-## 5. 리스크 / 미확정 (`[UNCERTAIN]`)
+```json
+{
+  "overall": "총평 2~3문장",
+  "pros": ["장점 불릿"],
+  "cons": ["단점 불릿"],
+  "menus": [
+    {"name": "돈카츠", "sentiment": "추천", "mentions": 23, "note": "한 줄 근거"}
+  ],
+  "caution": "주의사항 또는 null"
+}
+```
 
-- **네이버 지도 리뷰 엔드포인트/셀렉터** — place는 iframe·비공식 JSON(GraphQL)일 수 있다.
-  Task에서 실제 응답을 덤프해 확정 후 `naver_review_collector`의 `# TODO`를 채운다.
-  (Referer 필수·CP949 인코딩 주의 — `CLAUDE.md` 구현 제약 참조)
-- 스크래핑 안정성(구조 변경 시 파싱 실패) — 실패는 사용자 안내 문구로 흡수.
+- `sentiment` ∈ {추천, 비추천, 호불호}. `menus`는 언급 수 내림차순, 최대 8개, 2회 이상 언급만.
+- 모델: `config.ANTHROPIC_MODEL = "claude-sonnet-4-5"` (상수로만 교체).
+- 파싱 실패·API 실패 시 `None` 반환 → 호출자가 폴백 응답 발송 (non-critical).
 
-## 6. 성공 기준
+## 5. 리뷰 dict 계약 (collector → analyst)
 
-- 장소명 입력 → 5초 내 요약 응답(캐시 히트 시 즉시).
-- 허용목록 외/무효 요청은 조용히 무시(200).
+| 키 | 타입 | 필수 |
+|----|------|------|
+| text | str | ✅ 리뷰 본문 |
+| rating | float \| None | 별점 (없으면 None) |
+| date | str \| None | 작성/방문일 |
+| visited_menus | list[str] | 리뷰에 태그된 방문 메뉴 (없으면 빈 리스트) |
+
+리뷰어 닉네임 등 식별 정보는 수집·저장하지 않는다.
+
+## 6. Lambda 구성
+
+| 함수 | 역할 | Timeout |
+|------|------|---------|
+| WebhookFunction | 검증(secret·허용목록) → URL/명령 파싱 → WorkerFunction `InvocationType="Event"` invoke → "분석 중" 발송 → 200 | 10초 |
+| WorkerFunction | place 해석 → 캐시 조회 → (미스 시) 수집 → 분석 → 포맷 → 발송 → 캐시 저장 | 120초 |
+
+Webhook payload → Worker 전달 이벤트: `{"chat_id": int, "action": "analyze"|"update", "naver_url": str|null, "shared_place_name": str|null}`
+
+## 7. 성공 기준
+
+- 신규 조회 30초 이내, 캐시 히트 3초 이내 응답.
+- MarkdownV2 파싱 오류(400) 0건 — 이스케이프 헬퍼 강제 경유로 보장.
+- 스크래핑 실패 시 개발자 chat으로 에러 알림, 사용자에겐 정중한 실패 안내.
+
+## 8. 리스크 중 미확정 사항 `[UNCERTAIN]`
+
+- 네이버 리뷰 엔드포인트·페이지네이션·응답 스키마 — Phase 1 실측으로 확정 (ROADMAP Task 1-1~1-3).
+- `visited_menus` 제공 여부는 실측 후 확정. 없으면 F4는 리뷰 본문 텍스트만으로 집계.
