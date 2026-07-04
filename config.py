@@ -40,13 +40,16 @@ LLM_MAX_OUTPUT_TOKENS: int = 2000            # 분석 응답 max_tokens
 # 스크래핑 함정: (1) Referer 헤더 필수(없으면 빈 응답) (2) 인코딩 CP949 가능 (3) 본문 iframe.
 NAVER_MAP_BASE_URL: str = "https://map.naver.com"
 NAVER_REQUEST_TIMEOUT: float = 15.0          # 수집 httpx 타임아웃(초)
-# 네이버 요청 시 반드시 함께 보낼 헤더(Referer 없으면 0건 — 외부 소스 함정)
+# 네이버 요청 시 반드시 함께 보낼 헤더.
+# ★ m.place.naver.com(모바일 호스트)은 데스크톱 User-Agent를 429로 차단한다(실측 확정).
+#   반드시 모바일 Chrome UA를 사용한다. Accept-Language도 함께 보낸다.
 NAVER_REQUEST_HEADERS: dict[str, str] = {
     "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        "Mozilla/5.0 (Linux; Android 13; SM-S911N) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     ),
     "Referer": "https://map.naver.com/",
+    "Accept-Language": "ko-KR,ko;q=0.9",
 }
 REVIEW_FETCH_LIMIT: int = 50                 # 분석에 사용할 최대 리뷰 수
 

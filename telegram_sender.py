@@ -37,6 +37,18 @@ def _build_send_message_url() -> str:
     return f"{TELEGRAM_API_BASE_URL}/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
 
 
+def _redact_token(text: str) -> str:
+    """로그 문자열에서 봇 토큰을 가린다.
+
+    httpx 오류 메시지에는 요청 URL(봇 토큰 포함)이 그대로 들어가므로,
+    그대로 로깅하면 CloudWatch 등에 토큰이 노출된다. 발송 전 반드시 이 함수를 경유한다.
+    """
+    token = config.TELEGRAM_BOT_TOKEN
+    if token and token in text:
+        return text.replace(token, "***")
+    return text
+
+
 def _truncate_message(text: str) -> str:
     """4096자 초과 메시지를 Telegram 한도 내로 안전하게 절단한다.
 
@@ -140,7 +152,7 @@ def _send_with_retry(chat_id: str, text: str) -> bool:
                     attempt,
                     config.RETRY_COUNT + 1,
                     chat_id,
-                    error,
+                    _redact_token(str(error)),
                     RETRY_WAIT_SECONDS,
                 )
                 time.sleep(RETRY_WAIT_SECONDS)
@@ -148,7 +160,7 @@ def _send_with_retry(chat_id: str, text: str) -> bool:
                 logger.error(
                     "Telegram 발송 최종 실패 (chat_id=%s, 오류=%s)",
                     chat_id,
-                    last_error,
+                    _redact_token(str(last_error)),
                 )
 
     return False
@@ -192,5 +204,5 @@ def send_error_alert(error_message: str) -> None:
         logger.error(
             "개발자 에러 알림 발송 실패 — 로깅 후 무시 (chat_id=%s, 오류=%s)",
             developer_chat_id,
-            error,
+            _redact_token(str(error)),
         )

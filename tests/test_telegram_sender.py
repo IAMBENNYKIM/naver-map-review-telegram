@@ -1,5 +1,6 @@
-"""telegram_sender 메시지 절단 단위 테스트 (네트워크 없음)."""
+"""telegram_sender 메시지 절단·토큰 가리기 단위 테스트 (네트워크 없음)."""
 
+import config
 import telegram_sender
 
 
@@ -32,3 +33,20 @@ class TestTruncateMessage:
         body = truncated[: -len(telegram_sender._TRUNCATION_SUFFIX)]
         trailing_backslashes = len(body) - len(body.rstrip("\\"))
         assert trailing_backslashes % 2 == 0
+
+
+class TestRedactToken:
+    def test_오류_문자열의_봇_토큰을_가린다(self, monkeypatch):
+        monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "123456:ABCDEF")
+        raw = "400 Bad Request for url 'https://api.telegram.org/bot123456:ABCDEF/sendMessage'"
+
+        redacted = telegram_sender._redact_token(raw)
+
+        assert "123456:ABCDEF" not in redacted
+        assert "***" in redacted
+
+    def test_토큰이_없으면_원문을_그대로_반환한다(self, monkeypatch):
+        monkeypatch.setattr(config, "TELEGRAM_BOT_TOKEN", "123456:ABCDEF")
+        text = "토큰이 포함되지 않은 일반 오류 메시지"
+
+        assert telegram_sender._redact_token(text) == text
