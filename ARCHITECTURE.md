@@ -1,5 +1,12 @@
 # ARCHITECTURE.md — 코드 구조 지도
 
+## 배포 현황 (운영 중, 2026-07-05)
+
+- CloudFormation 스택 `naver-map-review-telegram` (리전 ap-northeast-2), 배포 프로파일 `naver-review`(전용 IAM 사용자).
+- Webhook 엔드포인트: `https://5q69qs7tq3.execute-api.ap-northeast-2.amazonaws.com/webhook` (Telegram setWebhook 등록 완료).
+- 함수: `naver-review-webhook`, `naver-review-worker` / 테이블: `prod_review_cache` / 시크릿: `naver-review/production`.
+- 로그: `aws logs tail /aws/lambda/naver-review-worker --profile naver-review --region ap-northeast-2` (Windows Git Bash는 `MSYS_NO_PATHCONV=1` 필요).
+
 ## 전체 흐름
 
 ```
@@ -29,7 +36,7 @@
 | `webhook_handler.py` | WebhookFunction 진입점. 검증·파싱·비동기 invoke·즉답 | 항상 200. `asyncio.run` 래퍼 |
 | `worker_handler.py` | WorkerFunction 진입점. 수집→분석→발송 오케스트레이션 | 예외 시 사용자 실패 안내 + 개발자 알림 |
 | `command_router.py` | 메시지 → 액션 결정(analyze/update/help), Worker 이벤트 생성 | URL 정규식 추출 |
-| `naver_review_collector.py` | place_id 해석, 리뷰 50개 수집·파싱 | 실측 확정 엔드포인트만 사용. httpx only |
+| `naver_review_collector.py` | place_id 해석, 리뷰 50개 수집·파싱 (조회당 3요청: naver.me 리다이렉트 → m.place Apollo → pcmap-api GraphQL) | httpx only, **모바일 UA 필수**(데스크톱 429), 429 무재시도 |
 | `review_analyst.py` | Claude 1회 호출, PRD §4 JSON 계약 출력 | non-critical, 실패 시 None |
 | `review_formatter.py` | 분석 JSON → MarkdownV2, 이스케이프 헬퍼 | 모든 동적 텍스트 이스케이프 강제 |
 | `dynamo_writer.py` | 캐시·last_query read/write | 쓰기 non-critical, float→Decimal |
