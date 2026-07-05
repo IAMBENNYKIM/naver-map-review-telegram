@@ -38,7 +38,11 @@
 - [x] 4-3 (A) 배포: Secrets Manager 등록 → `sam deploy --profile naver-review` → setWebhook 등록·검증(ok, 오류 없음)
   - 신규 IAM 사용자 `naver-review-deployer`(AdministratorAccess)로 배포. TELEGRAM_WEBHOOK_SECRET는 비어 있던 것을 64자 랜덤으로 채움
   - WebhookApiUrl: `https://5q69qs7tq3.execute-api.ap-northeast-2.amazonaws.com/webhook`
-- [ ] 4-4 (A) 실기기 E2E: ① URL 공유→요약 수신 ② 재조회→캐시 응답 ③ /update→갱신 (사용자 폰에서 전송, Advisor가 로그로 검증)
+- [~] 4-4 (A) E2E: 최초 배포 후 실기기 테스트에서 429 실패 발견 → 원인 규명·수정·재배포 → Lambda 직접 호출로 전 구간 성공 검증(소이빙수, 31.8s, 에러 없음)
+  - **버그①(핵심)**: config가 모바일 호스트 m.place에 데스크톱 UA를 보내 429 차단 → 모바일 UA로 수정(실측: 데스크톱 429/모바일 200). collector 테스트가 전부 Mock이라 미검출
+  - **버그②**: 시크릿 TELEGRAM_DEVELOPER_CHAT_ID에 따옴표 포함 → 에러 알림 400. 따옴표 제거
+  - **보안**: httpx 오류 문자열로 봇 토큰이 CloudWatch 로그에 노출 → _redact_token으로 가림. (기노출 토큰은 사용자 BotFather 재발급 권장)
+  - 남은 확인: 사용자 폰에서 ② 재조회(캐시 히트) ③ /update 시나리오
 
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
