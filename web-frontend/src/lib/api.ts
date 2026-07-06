@@ -118,12 +118,13 @@ export async function requestInvite(code: string): Promise<string> {
 export async function requestAnalyze(
   token: string,
   naverUrl: string,
+  forceRefresh = false,
 ): Promise<string> {
   const data = await request<{ job_id: string }>({
     method: "POST",
     path: "/analyze",
     token,
-    body: { naver_url: naverUrl },
+    body: { naver_url: naverUrl, force_refresh: forceRefresh },
   });
   return data.job_id;
 }
@@ -136,6 +137,7 @@ interface RawResultResponse {
   address?: string;
   review_count?: number;
   cache_hit?: boolean;
+  updated_at?: string;
   error_message?: string;
 }
 
@@ -229,6 +231,7 @@ export async function fetchResult(
     reviewCount:
       typeof raw.review_count === "number" ? raw.review_count : null,
     cacheHit: Boolean(raw.cache_hit),
+    updatedAt: raw.updated_at ?? null,
     errorMessage: raw.error_message ?? null,
   };
 }

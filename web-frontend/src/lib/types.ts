@@ -42,6 +42,8 @@ export interface AnalysisResult {
   address: string | null;
   reviewCount: number | null;
   cacheHit: boolean;
+  /** 분석/캐시 갱신 시점 ISO 문자열. 없으면 null. */
+  updatedAt: string | null;
   errorMessage: string | null;
 }
 
