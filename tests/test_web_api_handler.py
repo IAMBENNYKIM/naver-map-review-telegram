@@ -124,6 +124,28 @@ class TestAnalyze:
         assert payload["job_id"] == job_id
         assert payload["identity"] == INVITE_IDENTITY
         assert payload["naver_url"] == naver_url
+        # force_refresh 미지정 시 기본 False로 전달된다.
+        assert payload["force_refresh"] is False
+
+    def test_force_refresh를_worker_payload로_전달한다(self):
+        naver_url = "https://naver.me/GB3423bX"
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"naver_url": naver_url, "force_refresh": True},
+            headers=bearer(session_token()),
+        )
+
+        mock_lambda_client = MagicMock()
+        with patch("web_store.create_job"), patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 202
+        invoke_kwargs = mock_lambda_client.invoke.call_args.kwargs
+        payload = json.loads(invoke_kwargs["Payload"].decode("utf-8"))
+        assert payload["force_refresh"] is True
 
 
 class TestResult:
@@ -181,6 +203,7 @@ class TestResult:
             "address": "성남시",
             "review_count": Decimal("42"),  # DynamoDB Decimal
             "cache_hit": False,
+            "updated_at": "2026-07-07T12:00:00+09:00",
         }
         with patch("web_store.get_job", return_value=job):
             result = web_api_handler.lambda_handler(
@@ -192,6 +215,8 @@ class TestResult:
         assert body["status"] == "done"
         assert body["review_count"] == 42  # Decimal → int
         assert body["place_name"] == "돈멜"
+        # updated_at(요약 갱신 시점)이 done 응답에 포함된다.
+        assert body["updated_at"] == "2026-07-07T12:00:00+09:00"
 
     def test_error_상태를_반환한다(self):
         job = {

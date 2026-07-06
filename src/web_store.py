@@ -109,8 +109,12 @@ def complete_job(
     address: str,
     review_count: int,
     cache_hit: bool,
+    updated_at: str,
 ) -> None:
-    """잡을 ``done`` 상태로 갱신하고 분석 결과를 기록한다. 실패는 로깅만(비크리티컬)."""
+    """잡을 ``done`` 상태로 갱신하고 분석 결과를 기록한다. 실패는 로깅만(비크리티컬).
+
+    updated_at은 요약 캐시의 갱신 시점(KST ISO)으로, /result 응답까지 전파된다.
+    """
     try:
         _jobs_table().update_item(
             Key={"job_id": job_id},
@@ -118,7 +122,7 @@ def complete_job(
                 "SET #status = :status, summary_json = :summary_json, "
                 "place_name = :place_name, address = :address, "
                 "review_count = :review_count, cache_hit = :cache_hit, "
-                "completed_at = :completed_at"
+                "updated_at = :updated_at, completed_at = :completed_at"
             ),
             ExpressionAttributeNames={"#status": "status"},
             ExpressionAttributeValues=convert_floats_to_decimal(
@@ -129,6 +133,7 @@ def complete_job(
                     ":address": address,
                     ":review_count": review_count,
                     ":cache_hit": cache_hit,
+                    ":updated_at": updated_at,
                     ":completed_at": _now_kst_iso(),
                 }
             ),
@@ -176,11 +181,13 @@ def save_web_summary(
     address: str,
     summary_json: str,
     review_count: int,
-) -> None:
-    """분석 요약을 웹 캐시에 저장한다. 실패는 로깅만(비크리티컬).
+) -> str:
+    """분석 요약을 웹 캐시에 저장하고 갱신 시점(updated_at)을 반환한다.
 
-    updated_at은 ISO 8601 KST로 자동 기록한다.
+    updated_at은 ISO 8601 KST로 자동 기록한다. 저장 실패는 로깅만(비크리티컬)
+    하되, 생성한 updated_at 문자열은 항상 반환한다(호출부가 잡 완료 기록에 쓴다).
     """
+    updated_at = _now_kst_iso()
     item = convert_floats_to_decimal(
         {
             "place_key": place_id,
@@ -188,13 +195,14 @@ def save_web_summary(
             "address": address,
             "summary_json": summary_json,
             "review_count": review_count,
-            "updated_at": _now_kst_iso(),
+            "updated_at": updated_at,
         }
     )
     try:
         _cache_table().put_item(Item=item)
     except Exception as error:  # noqa: BLE001 (저장 실패는 응답을 막지 않는다)
         logger.warning("웹 캐시 저장 실패(무시, place_id=%s): %s", place_id, error)
+    return updated_at
 
 
 # ---------------------------------------------------------------------------

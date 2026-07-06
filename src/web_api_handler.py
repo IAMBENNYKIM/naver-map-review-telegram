@@ -96,9 +96,12 @@ def _handle_analyze(event: dict) -> dict:
     if not naver_url:
         return _response(400, {"error": "naver_url is required"})
 
+    # force_refresh: 캐시를 무시하고 강제 재분석(Telegram /update와 동일 의미)
+    force_refresh = bool(body.get("force_refresh", False))
+
     job_id = uuid.uuid4().hex
     web_store.create_job(job_id, identity, naver_url)
-    _invoke_web_worker(job_id, identity, naver_url)
+    _invoke_web_worker(job_id, identity, naver_url, force_refresh)
     logger.info("분석 잡 생성·invoke 완료 (job_id=%s, identity=%s)", job_id, identity)
     return _response(202, {"job_id": job_id})
 
@@ -124,6 +127,7 @@ def _handle_result(event: dict) -> dict:
             "address": job.get("address"),
             "review_count": job.get("review_count"),
             "cache_hit": job.get("cache_hit"),
+            "updated_at": job.get("updated_at"),
         }
     elif status == "error":
         payload = {"status": "error", "error_message": job.get("error_message")}
@@ -147,10 +151,12 @@ def _handle_admin_stats(event: dict) -> dict:
 # ---------------------------------------------------------------------------
 # 비동기 invoke
 # ---------------------------------------------------------------------------
-def _invoke_web_worker(job_id: str, identity: str, naver_url: str) -> None:
+def _invoke_web_worker(
+    job_id: str, identity: str, naver_url: str, force_refresh: bool
+) -> None:
     """WebWorkerFunction을 InvocationType="Event"로 비동기 invoke한다.
 
-    이벤트 계약: {"job_id", "identity", "naver_url"}.
+    이벤트 계약: {"job_id", "identity", "naver_url", "force_refresh"}.
     (webhook_handler._invoke_worker 패턴 참고.)
     """
     import boto3
@@ -159,6 +165,7 @@ def _invoke_web_worker(job_id: str, identity: str, naver_url: str) -> None:
         "job_id": job_id,
         "identity": identity,
         "naver_url": naver_url,
+        "force_refresh": force_refresh,
     }
     lambda_client = boto3.client("lambda", region_name=config.AWS_REGION)
     lambda_client.invoke(

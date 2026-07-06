@@ -25,6 +25,7 @@ PLACE_DETAIL = {
 }
 REVIEW_LIST = [{"text": "맛있어요"}, {"text": "괜찮아요"}]
 SUMMARY_JSON = '{"summary": "좋음"}'
+UPDATED_AT = "2026-07-07T12:00:00+09:00"
 
 
 def _event() -> dict:
@@ -41,7 +42,7 @@ def _patch_common(monkeypatch):
     mocks = {
         "get_web_cached_summary": MagicMock(return_value=None),
         "get_prod_cached_summary": MagicMock(return_value=None),
-        "save_web_summary": MagicMock(),
+        "save_web_summary": MagicMock(return_value=UPDATED_AT),
         "complete_job": MagicMock(),
         "fail_job": MagicMock(),
         "log_usage": MagicMock(),
@@ -76,6 +77,7 @@ class TestCacheHit:
             "place_name": "돈멜 본점",
             "address": "성남시 분당구",
             "review_count": 42,
+            "updated_at": UPDATED_AT,
         }
         # 파이프라인이 호출되면 실패하도록 지뢰를 심는다
         monkeypatch.setattr(
@@ -88,6 +90,8 @@ class TestCacheHit:
 
         mocks["complete_job"].assert_called_once()
         assert mocks["complete_job"].call_args.kwargs["cache_hit"] is True
+        # 캐시의 updated_at이 잡 완료 기록으로 전파된다.
+        assert mocks["complete_job"].call_args.kwargs["updated_at"] == UPDATED_AT
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=True)
         # prod 캐시는 조회하지 않는다(web 히트로 조기 반환)
         mocks["get_prod_cached_summary"].assert_not_called()
@@ -100,6 +104,7 @@ class TestCacheHit:
             "place_name": "돈멜 본점",
             "address": "성남시 분당구",
             "review_count": 7,
+            "updated_at": UPDATED_AT,
         }
 
         web_worker_handler.lambda_handler(_event(), None)
@@ -110,6 +115,8 @@ class TestCacheHit:
         assert warm_args[0] == PLACE_ID
         mocks["complete_job"].assert_called_once()
         assert mocks["complete_job"].call_args.kwargs["cache_hit"] is True
+        # prod 캐시 항목의 updated_at이 잡 완료 기록으로 전파된다.
+        assert mocks["complete_job"].call_args.kwargs["updated_at"] == UPDATED_AT
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=True)
 
 
@@ -133,9 +140,38 @@ class TestFreshAnalysis:
         assert complete_kwargs["cache_hit"] is False
         assert complete_kwargs["summary_json"] == SUMMARY_JSON
         assert complete_kwargs["review_count"] == len(REVIEW_LIST)
+        # save_web_summary가 반환한 updated_at이 잡 완료 기록으로 전파된다.
+        assert complete_kwargs["updated_at"] == UPDATED_AT
 
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=False)
         mocks["fail_job"].assert_not_called()
+
+    def test_force_refresh면_캐시를_건너뛰고_신규_분석한다(self, monkeypatch):
+        mocks = _patch_common(monkeypatch)
+        _patch_pipeline(monkeypatch)
+        # 캐시가 히트해도(web 캐시 존재) force_refresh면 무시하고 신규 분석해야 한다.
+        mocks["get_web_cached_summary"].return_value = {
+            "summary_json": "STALE",
+            "place_name": "옛 이름",
+            "address": "옛 주소",
+            "review_count": 1,
+            "updated_at": "2020-01-01T00:00:00+09:00",
+        }
+
+        event = dict(_event(), force_refresh=True)
+        web_worker_handler.lambda_handler(event, None)
+
+        # 캐시 조회를 아예 건너뛴다(web·prod 모두 조회하지 않음).
+        mocks["get_web_cached_summary"].assert_not_called()
+        mocks["get_prod_cached_summary"].assert_not_called()
+
+        # 신규 수집·분석 경로를 타고, cache_hit=False로 기록한다.
+        mocks["save_web_summary"].assert_called_once()
+        mocks["complete_job"].assert_called_once()
+        complete_kwargs = mocks["complete_job"].call_args.kwargs
+        assert complete_kwargs["cache_hit"] is False
+        assert complete_kwargs["summary_json"] == SUMMARY_JSON
+        mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=False)
 
     def test_분석_결과가_None이면_잡을_실패_처리한다(self, monkeypatch):
         mocks = _patch_common(monkeypatch)
