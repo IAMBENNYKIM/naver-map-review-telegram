@@ -30,7 +30,8 @@ RATE_LIMIT_DELAY: float = 0.5     # 외부(네이버) 요청 간 딜레이(초) 
 # Claude API 리뷰 분석 (review_analyst)
 # ---------------------------------------------------------------------------
 ANTHROPIC_MODEL: str = "claude-sonnet-4-5"   # 분석 생성 모델 (변경 시 이 상수만 수정)
-LLM_COMMENTARY_ENABLED: bool = True          # 분석 기능 킬 스위치 (False면 호출 생략)
+# 분석 기능 킬 스위치 — 기본 true라 기존 동작 불변, 환경변수로 끌 수 있다(비용 차단용).
+LLM_COMMENTARY_ENABLED: bool = os.getenv("LLM_COMMENTARY_ENABLED", "true").lower() == "true"
 LLM_MAX_OUTPUT_TOKENS: int = 2000            # 분석 응답 max_tokens
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,19 @@ WORKER_FUNCTION_NAME: str = os.getenv("WORKER_FUNCTION_NAME", "")
 DYNAMO_TABLE_PREFIX: str = os.getenv("DYNAMO_TABLE_PREFIX", "dev_")
 DYNAMO_TABLE_REVIEW_CACHE: str = f"{DYNAMO_TABLE_PREFIX}review_cache"  # 장소별 리뷰/요약 캐시
 
+# ---------------------------------------------------------------------------
+# 웹 진입점 전용 테이블·상수 (별도 SAM 스택 naver-review-web — Telegram과 격리)
+# ---------------------------------------------------------------------------
+# 기존 DYNAMO_TABLE_PREFIX(로컬 dev_ / 프로덕션 prod_)를 재사용한다.
+WEB_CACHE_TABLE: str = f"{DYNAMO_TABLE_PREFIX}web_review_cache"   # 웹 전용 리뷰/요약 캐시
+WEB_JOBS_TABLE: str = f"{DYNAMO_TABLE_PREFIX}web_jobs"           # 비동기 분석 잡 상태
+WEB_USAGE_TABLE: str = f"{DYNAMO_TABLE_PREFIX}web_usage"         # identity별 사용량 통계
+# 기존 Telegram 캐시 테이블 — read-through로 읽기 전용 조회만 한다.
+PROD_REVIEW_CACHE_TABLE: str = os.getenv("PROD_REVIEW_CACHE_TABLE", "prod_review_cache")
+# 웹 세션 토큰 유효기간(7일) / job 항목 TTL(1시간)
+WEB_SESSION_TTL_SECONDS: int = 7 * 24 * 3600
+WEB_JOB_TTL_SECONDS: int = 3600
+
 # get_secret()가 추출하는 자격증명 키 목록 (.env / Secrets Manager 공통 스키마)
 # ★ .env.example 의 키 목록과 정확히 일치시킨다.
 _SECRET_KEYS: tuple[str, ...] = (
@@ -78,6 +92,12 @@ _SECRET_KEYS: tuple[str, ...] = (
     "TELEGRAM_DEVELOPER_CHAT_ID",
     "TELEGRAM_WEBHOOK_SECRET",
     "ANTHROPIC_API_KEY",
+    # 웹 진입점(naver-review-web) 전용 시크릿. Telegram 시크릿 스토어에는 이 키들이
+    # 없을 수 있으나, _secret.get(key, "")가 빈 문자열을 반환하므로 Telegram 런타임은
+    # 영향받지 않는다(격리의 핵심 — 웹 스택만 이 키들을 실제로 채운다).
+    "WEB_SESSION_SECRET",
+    "WEB_INVITE_CODES",
+    "WEB_ADMIN_TOKEN",
 )
 
 
@@ -142,6 +162,34 @@ def _parse_chat_ids(value: object) -> list[str]:
     return [str(item) for item in json.loads(value)]
 
 
+def _parse_invite_codes(value: object) -> dict[str, str]:
+    """JSON 객체 문자열 ``{"코드":"표시이름"}`` → ``dict[str, str]`` 변환.
+
+    이미 dict면 그대로 정규화, 빈 값이면 ``{}``. 반환값은 초대코드 → 표시이름(alias)
+    매핑이며, 표시이름이 사용량 통계의 identity가 된다(PII 아님).
+
+    견고성: 파싱 실패·형식 오류 시 예외를 전파하지 않고 경고 로그 + 빈 dict를 반환한다
+    (웹 설정 오류가 config import 전체를 막지 않도록).
+    """
+    if isinstance(value, dict):
+        return {str(code): str(alias) for code, alias in value.items()}
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as error:
+        logging.getLogger(__name__).warning(
+            "WEB_INVITE_CODES 파싱 실패(빈 dict로 대체): %s", error
+        )
+        return {}
+    if not isinstance(parsed, dict):
+        logging.getLogger(__name__).warning(
+            "WEB_INVITE_CODES가 객체(dict) 형식이 아님(빈 dict로 대체)"
+        )
+        return {}
+    return {str(code): str(alias) for code, alias in parsed.items()}
+
+
 # ---------------------------------------------------------------------------
 # 자격증명 모듈 레벨 변수 (import 시 자동 로드)
 # ---------------------------------------------------------------------------
@@ -155,3 +203,14 @@ TELEGRAM_WEBHOOK_SECRET: str = _secret.get("TELEGRAM_WEBHOOK_SECRET", "")
 
 # Claude API 키 (분석 기능 — 없으면 review_analyst가 None 반환해 분석만 생략)
 ANTHROPIC_API_KEY: str = _secret.get("ANTHROPIC_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# 웹 진입점 자격증명 (naver-review-web 스택 전용 — Telegram과 격리)
+# ---------------------------------------------------------------------------
+# 세션 토큰 서명 키(HMAC), 관리자 통계 조회 토큰.
+WEB_SESSION_SECRET: str = _secret.get("WEB_SESSION_SECRET", "")
+WEB_ADMIN_TOKEN: str = _secret.get("WEB_ADMIN_TOKEN", "")
+# 초대코드 → 표시이름(identity) 매핑. JSON 객체 문자열을 파싱한다.
+WEB_INVITE_CODES: dict[str, str] = _parse_invite_codes(
+    _secret.get("WEB_INVITE_CODES", "{}")
+)

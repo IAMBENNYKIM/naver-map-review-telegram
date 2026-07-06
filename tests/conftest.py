@@ -24,6 +24,12 @@ os.environ["DYNAMO_TABLE_PREFIX"] = "dev_"
 os.environ["AWS_DEFAULT_REGION"] = "ap-northeast-2"
 os.environ["WORKER_FUNCTION_NAME"] = "test-worker-function"
 
+# 웹 진입점(naver-review-web) 전용 시크릿 — config import 전에 확정한다.
+os.environ["WEB_SESSION_SECRET"] = "test-web-session-secret"
+os.environ["WEB_ADMIN_TOKEN"] = "test-web-admin-token"
+os.environ["WEB_INVITE_CODES"] = '{"invite-code-1": "친구A", "invite-code-2": "친구B"}'
+os.environ["PROD_REVIEW_CACHE_TABLE"] = "prod_review_cache"
+
 # moto용 가짜 AWS 자격증명 (실제 AWS 호출 차단)
 os.environ["AWS_ACCESS_KEY_ID"] = "testing"
 os.environ["AWS_SECRET_ACCESS_KEY"] = "testing"
