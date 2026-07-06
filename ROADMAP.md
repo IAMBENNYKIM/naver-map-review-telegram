@@ -53,9 +53,14 @@
 - [x] 5-0 (A) 브레인스토밍·격리/비용/UI 결정 확정, 비동기 잡+폴링 확정, 플랜 승인 (2026-07-06)
 - [x] 5-1 (D) 웹 코어 로직: `config.py` 확장(web 시크릿·테이블·킬스위치), `web_store.py`(jobs/usage/web캐시/prod 읽기전용 read-through), `web_auth.py`(세션토큰·초대코드·admin) + moto·단위 테스트 (커밋 0538b1b)
 - [x] 5-2 (D) Lambda 핸들러+인프라: `web_api_handler.py`(라우팅·초대/세션/잡생성/폴링/admin), `web_worker_handler.py`(resolve→캐시→collector→analyst→잡결과·사용량), `template-web.yaml`(WebApi+WebWorker 2함수·3테이블·IAM 최소권한·Budget Alarm·킬스위치) + 테스트
+- [x] 5-2b (D) **배포 패키지 250MB 초과 긴급 수정**: 배포 Python 13개+`requirements.txt`를 `src/`로 이동, 두 템플릿 `CodeUri: src/` → 함수당 44MB (원인: 루트 `CodeUri: .`가 `.venv`·`web-frontend/node_modules`·`.git` 포함, sam build는 .gitignore 무시). 커밋 5457031. 교훈은 `docs/setup-guide.md` §8·`CLAUDE.md` #14에 반영
 - [x] 5-3 (A) 백엔드 검증: Advisor 직접 `pytest tests/` 152 passed, `sam validate --lint -t template-web.yaml` valid 확인 → 커밋. (배포·실AWS E2E는 5-5)
 - [x] 5-4 (D) Next.js 15/shadcn PWA: 초대 게이트 + URL 입력 + 결과 카드(review_analyst JSON 렌더) + 폴링 + 관리자 통계 페이지, 웹 공유 타겟 (`web-frontend/`, npm run build/lint 통과, 커밋 952662f)
-- [ ] 5-5 (A) E2E 검증·배포 (**사용자 준비물 필요** — 아래 배포 런북): ① Secrets Manager `naver-review/web` 생성 ② `sam deploy -t template-web.yaml --stack-name naver-review-web` ③ Vercel 배포(Root Dir=web-frontend, NEXT_PUBLIC_API_BASE_URL=WebApiUrl) ④ AllowedOrigin을 Vercel 도메인으로 축소 재배포 ⑤ Telegram 봇 무손상 확인 + 신규/캐시히트/admin 시나리오 검증
+- [~] 5-5 (A) E2E 검증·배포 (사용자 수행 — 런북·함정은 `docs/setup-guide.md` §8):
+  - [x] 백엔드 배포: 시크릿 `naver-review/web` 생성 → `sam build -t template-web.yaml` → `sam deploy --stack-name naver-review-web`(‑t 없이·`--parameter-overrides` 명시) 성공, `WebApiUrl` 확보 (250MB 이슈는 5-2b로 해결)
+  - [x] 프론트 배포: Vercel Import(Root=`web-frontend`, `NEXT_PUBLIC_API_BASE_URL`=WebApiUrl) 성공, 초대 게이트 렌더 확인
+  - [ ] CORS 축소: `AllowedOrigin`을 Vercel 도메인으로 재배포
+  - [ ] 최종 검증: Telegram 봇 무손상 + 웹 신규/캐시히트/`/admin` 시나리오
 
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
