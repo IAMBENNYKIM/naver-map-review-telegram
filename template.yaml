@@ -36,7 +36,7 @@ Resources:
     Properties:
       FunctionName: naver-review-webhook
       Handler: webhook_handler.lambda_handler
-      CodeUri: .
+      CodeUri: src/
       MemorySize: 256
       Timeout: 10
       Description: Telegram Webhook 수신 → 검증·파싱 → WorkerFunction 비동기 invoke → 즉답
@@ -78,7 +78,7 @@ Resources:
     Properties:
       FunctionName: naver-review-worker
       Handler: worker_handler.lambda_handler
-      CodeUri: .
+      CodeUri: src/
       MemorySize: 512
       Timeout: 120
       Description: place 해석 → 캐시 조회 → 수집 → Claude 분석 → 발송 → 캐시 저장

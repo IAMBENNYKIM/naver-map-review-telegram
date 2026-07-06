@@ -85,7 +85,7 @@ Resources:
     Properties:
       FunctionName: naver-review-web-api
       Handler: web_api_handler.lambda_handler
-      CodeUri: .
+      CodeUri: src/
       MemorySize: 256
       Timeout: 10
       Description: 초대·세션 발급 / 잡 생성 + 비동기 invoke / 결과 폴링 / 관리자 통계
@@ -159,7 +159,7 @@ Resources:
     Properties:
       FunctionName: naver-review-web-worker
       Handler: web_worker_handler.lambda_handler
-      CodeUri: .
+      CodeUri: src/
       MemorySize: 512
       Timeout: 120
       Description: place 해석 → 캐시(web/prod read-through) → 수집 → 분석 → 잡 완료 기록

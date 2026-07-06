@@ -74,7 +74,7 @@ aws secretsmanager create-secret `
 
 ```powershell
 sam validate --lint      # 템플릿 검증 (자격증명 불필요)
-sam build                # requirements.txt(런타임 최소)만 설치해 패키징
+sam build                # src/requirements.txt(런타임 최소)만 설치해 패키징
 sam deploy               # samconfig.toml 설정으로 배포 (최초에도 동일)
 ```
 

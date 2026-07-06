@@ -8,10 +8,12 @@ load_dotenv(override=False)는 기존 환경변수를 덮어쓰지 않으므로 
 import os
 import sys
 
-# 프로젝트 루트를 import 경로에 추가 (루트 평면 구조 모듈 import용)
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
+# 배포 대상 모듈이 위치한 src/ 를 import 경로에 추가 (src 평면 구조 모듈 import용)
+_SRC_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"
+)
+if _SRC_DIR not in sys.path:
+    sys.path.insert(0, _SRC_DIR)
 
 # config import 전에 확정해야 하는 테스트용 환경변수
 os.environ["LOCAL_DEV"] = "true"
