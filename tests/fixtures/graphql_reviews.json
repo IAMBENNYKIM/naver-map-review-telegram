@@ -1,0 +1,54 @@
+[
+  {
+    "data": {
+      "visitorReviews": {
+        "items": [
+          {
+            "id": "fixture-review-0001",
+            "reviewId": "fixture-review-0001r",
+            "rating": null,
+            "author": {"id": "anon01", "nickname": "가명리뷰어1"},
+            "body": "고기가 정말 맛있고 직원분들이 직접 구워주셔서 편했어요.",
+            "visited": "6.28.일",
+            "created": "6.28.일",
+            "visitCount": 1,
+            "originType": "영수증",
+            "votedKeywords": [
+              {"name": "음식이 맛있어요"},
+              {"name": "친절해요"},
+              {"name": "직접 잘 구워줘요"}
+            ],
+            "representativeVisitDateTime": "2026-06-28T09:19:36.000Z"
+          },
+          {
+            "id": "fixture-review-0002",
+            "reviewId": "fixture-review-0002r",
+            "rating": null,
+            "author": {"id": "anon02", "nickname": "가명리뷰어2"},
+            "body": "",
+            "visited": "6.25.목",
+            "created": "6.25.목",
+            "visitCount": 2,
+            "originType": "영수증",
+            "votedKeywords": [{"name": "음식이 맛있어요"}],
+            "representativeVisitDateTime": "2026-06-25T11:02:10.000Z"
+          },
+          {
+            "id": "fixture-review-0003",
+            "reviewId": "fixture-review-0003r",
+            "rating": null,
+            "author": {"id": "anon03", "nickname": "가명리뷰어3"},
+            "body": "  웨이팅이 30분 정도 있었지만 목살이 두툼해서 만족.  ",
+            "visited": "6.20.토",
+            "created": "6.20.토",
+            "visitCount": 1,
+            "originType": "영수증",
+            "votedKeywords": null,
+            "representativeVisitDateTime": "2026-06-20T12:45:00.000Z"
+          }
+        ],
+        "total": 895
+      }
+    }
+  }
+]

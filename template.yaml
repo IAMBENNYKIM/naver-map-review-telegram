@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  naver-map-review-telegram — 네이버 지도 리뷰 요약 Telegram 봇 (온디맨드 Webhook).
-  사용자 메시지 → Telegram Webhook → API Gateway → 리뷰 수집·Claude 요약 → 응답 발송.
+  naver-map-review-telegram — 네이버 지도 리뷰 요약 Telegram 봇 (2-Lambda 구조).
+  Telegram Webhook → API Gateway → WebhookFunction(검증·즉답·비동기 invoke)
+  → WorkerFunction(수집·Claude 분석·발송·캐시 저장).
 
 # ---------------------------------------------------------------------------
 # 파라미터 (배포 시 --parameter-overrides 로 조정 가능)
@@ -23,28 +24,29 @@ Parameters:
 Globals:
   Function:
     Runtime: python3.12
-    MemorySize: 512
-    Timeout: 300            # 5분 (수집·요약·발송 파이프라인 여유)
     Architectures:
       - x86_64
 
 Resources:
   # -------------------------------------------------------------------------
-  # 인바운드 Webhook 핸들러 Lambda + API Gateway(HTTP API) — 온디맨드 리뷰 요약
+  # WebhookFunction — Telegram Webhook 수신·검증·즉답·WorkerFunction 비동기 invoke
   # -------------------------------------------------------------------------
   WebhookFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: naver-review-webhook
       Handler: webhook_handler.lambda_handler
-      CodeUri: .
-      Description: Telegram Webhook 수신 → 명령 라우팅(/review) → 리뷰 요약 응답 발송
+      CodeUri: src/
+      MemorySize: 256
+      Timeout: 10
+      Description: Telegram Webhook 수신 → 검증·파싱 → WorkerFunction 비동기 invoke → 즉답
       Environment:
         Variables:
           # AWS_DEFAULT_REGION/AWS_REGION 은 Lambda 예약 키 — 런타임이 자동 주입하므로 설정 금지.
           # LOCAL_DEV 미설정(기본 false) → config 가 Secrets Manager 경로 사용.
           SECRETS_NAME: !Ref SecretsName
           DYNAMO_TABLE_PREFIX: !Ref TablePrefix
+          WORKER_FUNCTION_NAME: !Ref WorkerFunction
       Events:
         Webhook:
           # 암묵적 HttpApi(ServerlessHttpApi) 생성. 앱 레벨 secret token 검증이라 GW 인증 불요.
@@ -53,7 +55,39 @@ Resources:
             Path: /webhook
             Method: post
       Policies:
-        # 최소 권한: 리뷰 캐시 읽기/쓰기 + 시크릿 읽기
+        # 최소 권한: WorkerFunction 비동기 invoke + 시크릿 읽기
+        - Statement:
+            - Sid: InvokeWorkerFunction
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt WorkerFunction.Arn
+            - Sid: SecretsManagerRead
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsName}-*"
+
+  # -------------------------------------------------------------------------
+  # WorkerFunction — place 해석·리뷰 수집·Claude 분석·발송·캐시 저장 (무거운 파이프라인)
+  # -------------------------------------------------------------------------
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: naver-review-worker
+      Handler: worker_handler.lambda_handler
+      CodeUri: src/
+      MemorySize: 512
+      Timeout: 120
+      Description: place 해석 → 캐시 조회 → 수집 → Claude 분석 → 발송 → 캐시 저장
+      Environment:
+        Variables:
+          SECRETS_NAME: !Ref SecretsName
+          DYNAMO_TABLE_PREFIX: !Ref TablePrefix
+      Policies:
+        # 최소 권한: 리뷰 캐시 읽기/쓰기(ReviewCacheTable 한정) + 시크릿 읽기
         - Statement:
             - Sid: DynamoDBAccess
               Effect: Allow
@@ -70,7 +104,7 @@ Resources:
                 - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsName}-*"
 
   # -------------------------------------------------------------------------
-  # DynamoDB — 리뷰/요약 캐시 (온디맨드 과금, PK=place_key, TTL 자동 만료)
+  # DynamoDB — 리뷰 요약 캐시 (온디맨드 과금, PK=place_key, TTL 미사용 — 만료 없음)
   # -------------------------------------------------------------------------
   ReviewCacheTable:
     Type: AWS::DynamoDB::Table
@@ -83,9 +117,6 @@ Resources:
       KeySchema:
         - AttributeName: place_key
           KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
 
 # ---------------------------------------------------------------------------
 # 출력
@@ -97,6 +128,9 @@ Outputs:
   WebhookFunctionName:
     Description: Webhook 핸들러 함수명 (수동 test invoke 시 사용)
     Value: !Ref WebhookFunction
+  WorkerFunctionName:
+    Description: Worker 함수명 (WebhookFunction 환경변수·수동 test invoke 시 사용)
+    Value: !Ref WorkerFunction
   ReviewCacheTableName:
     Description: 리뷰 캐시 테이블명
     Value: !Ref ReviewCacheTable
