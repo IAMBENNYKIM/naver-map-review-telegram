@@ -46,7 +46,21 @@
   - **보안**: httpx 오류 문자열로 봇 토큰이 CloudWatch 로그에 노출 → _redact_token으로 가림. (기노출 토큰은 사용자 BotFather 재발급 권장)
   - 남은 확인: 사용자 폰에서 ② 재조회(캐시 히트) ③ /update 시나리오
 
+## Phase 5 — 웹 진입점 (Telegram 외 진입 경로, 격리 신규 스택)
+
+브레인스토밍·설계: `~/.claude/plans/temporal-orbiting-wand.md`. 목표=지인 확산용 웹(PWA) 진입점. 제약=기존 Telegram 봇 영향 0(별도 SAM 스택 `naver-review-web`), 비용 통제. 초점=**확장성 우선**(일일 쿼터는 Phase 6). 응답 구조=**비동기 잡+폴링**(캐시 미스 파이프라인 ~30초 → API GW 타임아웃 회피, 기존 2-Lambda 비동기 계승).
+
+- [x] 5-0 (A) 브레인스토밍·격리/비용/UI 결정 확정, 비동기 잡+폴링 확정, 플랜 승인 (2026-07-06)
+- [ ] 5-1 (D) 웹 코어 로직: `config.py` 확장(web 시크릿·테이블·킬스위치), `web_store.py`(jobs/usage/web캐시/prod 읽기전용 read-through), `web_auth.py`(세션토큰·초대코드·admin) + moto·단위 테스트
+- [ ] 5-2 (D) Lambda 핸들러+인프라: `web_api_handler.py`(라우팅·초대/세션/잡생성/폴링/admin), `web_worker_handler.py`(resolve→캐시→collector→analyst→잡결과·사용량), `template-web.yaml`(WebApi+WebWorker 2함수·3테이블·IAM 최소권한·Budget Alarm·킬스위치) + 테스트
+- [ ] 5-3 (A) 백엔드 검증: `pytest tests/` 전체 통과, `sam validate --lint`(web 템플릿), 로컬 시나리오(초대→분석→폴링→admin) 확인 → 커밋
+- [ ] 5-4 (D) Next.js 15/shadcn PWA: 초대 게이트 + URL 입력 + 결과 카드(review_analyst JSON 렌더) + 폴링 + 관리자 통계 페이지, 웹 공유 타겟
+- [ ] 5-5 (A) E2E 검증·배포: 웹 스택 배포, Telegram 봇 무손상 확인, 신규/캐시히트/admin 시나리오 검증
+
 ## 백로그 (MVP 이후, VOC 기반 결정)
+
+- per-identity 일일 쿼터 (Phase 6 — 웹 확산 시. 5-1 사용량 카운터 재사용)
+- 카카오 소셜 로그인 전환 / 카카오 채널·알림톡
 
 - 장소명 텍스트 검색 (URL 없이)
 - 개인 리뷰 기록/조회 (/review, /review_update — UC-3)
