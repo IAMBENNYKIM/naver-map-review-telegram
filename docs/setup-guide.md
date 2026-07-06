@@ -119,6 +119,57 @@ curl.exe -X POST "https://api.telegram.org/bot<봇토큰>/setWebhook" `
 
 추가: `/help` → 사용법 안내, 허용목록 외 chat에서 보내면 무응답(정상).
 
+## 8. 웹 진입점 배포 (naver-review-web 스택 + Vercel)
+
+Telegram 봇과 **완전히 격리된 별도 SAM 스택**으로 웹(PWA) 진입점을 배포한다(제약: 기존 봇 영향 0). 응답 구조는 **비동기 잡+폴링**(캐시 미스 파이프라인 ~30초 > API GW 30초 타임아웃 회피). 프론트는 정적 Next.js(`web-frontend/`)로 Vercel에 올린다.
+
+### 8-1. 웹 전용 시크릿 `naver-review/web` 생성
+
+Telegram 시크릿과 분리한다. 키 4종: `ANTHROPIC_API_KEY`(기존 값 재사용), `WEB_SESSION_SECRET`, `WEB_INVITE_CODES`(`{"초대코드":"표시이름"}` JSON 문자열 — 표시이름이 `/admin` 통계에 뜸), `WEB_ADMIN_TOKEN`.
+
+```powershell
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # WEB_SESSION_SECRET, WEB_ADMIN_TOKEN 각각 1회
+```
+
+콘솔 Secrets Manager → Store a new secret → *Plaintext*에 JSON 붙여넣기 → 이름 `naver-review/web`.
+(`WEB_INVITE_CODES` 값은 JSON 문자열 안의 JSON이라 따옴표 이스케이프 필요.)
+
+### 8-2. 백엔드 배포 (sam build/deploy) — ⚠️ 함정 3가지 (이 세션 실측)
+
+1. **`sam deploy`에 `-t`를 붙이지 마라.** `sam build -t template-web.yaml`이 산출물을 `.aws-sam/build/`(deps 포함)에 만들고, **`-t` 없는** `sam deploy`가 그걸 배포한다. `-t template-web.yaml`로 소스를 직접 배포하면 httpx/anthropic 누락 → 런타임 ImportError.
+2. **`--stack-name naver-review-web` 필수.** `samconfig.toml`은 Telegram 전용(`stack_name=naver-map-review-telegram`)이라, 빠뜨리면 웹 템플릿이 **기존 봇 스택을 덮어쓴다**.
+3. **`--parameter-overrides`로 `SecretsName=naver-review/web` 명시.** CLI 오버라이드가 samconfig의 `SecretsName=naver-review/production`을 **전면 대체**한다(안 하면 웹이 Telegram 시크릿을 읽어 WEB_* 키가 비어 인증이 깨짐).
+
+```powershell
+sam build -t template-web.yaml
+sam deploy --stack-name naver-review-web `
+  --profile naver-review --region ap-northeast-2 --capabilities CAPABILITY_IAM --resolve-s3 `
+  --parameter-overrides "SecretsName=naver-review/web TablePrefix=prod_ ProdReviewCacheTable=prod_review_cache BudgetNotificationEmail=본인이메일@example.com"
+```
+
+- `confirm_changeset=true`라 배포 전 변경셋 확인 → **Stack이 `naver-review-web`이고 리소스가 Add/CREATE면 `y`**. `naver-map-review-telegram`이 보이거나 기존 리소스 Modify/Delete면 **`N`으로 즉시 중단**.
+- 배포 실패로 **ROLLBACK_COMPLETE** 상태가 되면 재배포 전 삭제 필수: `sam delete --stack-name naver-review-web --profile naver-review --region ap-northeast-2`.
+- `sam build`가 Python 버전으로 실패하면 `--use-container`(Docker 필요) 추가.
+- 출력 **`WebApiUrl`** 복사 → Vercel 환경변수에 사용.
+- (선택 스모크) `Invoke-RestMethod -Method Post -Uri "<WebApiUrl>/invite" -ContentType "application/json" -Body '{"code":"..."}'` → `token` 반환 확인.
+
+배포 리소스: `WebApiFunction`(256MB/10s), `WebWorkerFunction`(512MB/120s), `web_review_cache`·`web_jobs`(TTL 1h)·`web_usage`, 조건부 `MonthlyCostBudget`. prod 캐시는 **읽기전용 read-through**(이름 참조, 이 스택이 소유하지 않음).
+
+### 8-3. 프론트 배포 (Vercel)
+
+1. vercel.com → GitHub 로그인(무료 Hobby) → **Add New → Project → Import Git Repository**(⚠️ 클론/템플릿 생성 아님).
+2. **Root Directory = `web-frontend`**(모노레포라 하위 폴더 지정 필수). Framework는 Next.js 자동 감지.
+3. **Environment Variables**: `NEXT_PUBLIC_API_BASE_URL` = 8-2의 `WebApiUrl`. → Deploy.
+4. **배포 대상 브랜치에 코드가 있어야 한다.** `main`이 비어 있으면 PR 병합하거나 Vercel Production Branch를 코드 있는 브랜치로 지정.
+
+### 8-4. CORS 좁히기 (보안 하드닝)
+
+백엔드 기본 `AllowedOrigin=*`(전체 허용) → 배포 후 Vercel 도메인으로 좁혀 재배포(8-2 명령에 `AllowedOrigin=https://프로젝트명.vercel.app` 추가).
+
+### 8-5. 검증
+
+① Telegram 봇 무손상(기존 봇에 URL → 정상 응답) ② 웹 초대코드→URL 분석→결과 카드 ③ 같은 URL 재요청 → "캐시" 배지(LLM 미호출) ④ `URL/admin` → `WEB_ADMIN_TOKEN`으로 표시이름별 사용량 통계.
+
 ## 문제 해결 체크리스트
 
 | 증상 | 확인 사항 |
@@ -130,6 +181,12 @@ curl.exe -X POST "https://api.telegram.org/bot<봇토큰>/setWebhook" `
 | Telegram 400 Bad Request | MarkdownV2 이스케이프 문제 — `review_formatter` 경유 여부 확인 (발송 로그에 응답 본문 기록됨) |
 | Secrets 로드 실패로 Lambda 에러 | 시크릿 이름(`naver-review/production`)·리전·JSON 키 5종 일치 확인 |
 | Webhook 로그 확인 | `aws logs tail /aws/lambda/naver-review-webhook --region ap-northeast-2 --since 10m` |
+| 웹 배포 `Unzipped size must be smaller than 262144000` | `CodeUri`가 `.venv`·`web-frontend/node_modules`·`.git`를 포함. 배포 Python은 `src/`에 있어야 하고 두 템플릿 `CodeUri: src/`인지 확인(sam build는 .gitignore 무시) |
+| 웹 배포가 Telegram 스택을 건드림 | `--stack-name naver-review-web` 누락(samconfig가 Telegram stack_name 사용). 8-2 함정 2·3 참조 |
+| 웹 배포 후 함수 ImportError(httpx 등) | `sam deploy`에 `-t`를 붙여 소스를 배포함. build 후 `-t` 없이 배포(8-2 함정 1) |
+| PowerShell `curl` 파라미터 바인딩 에러 | `curl`은 `Invoke-WebRequest` 별칭 — `curl.exe` 또는 `Invoke-RestMethod` 사용 |
+| 웹 "API 서버 주소가 설정되지 않았어요" | Vercel env `NEXT_PUBLIC_API_BASE_URL` 미설정 — Settings → Environment Variables 추가 후 Redeploy |
+| 웹 "서버에 연결하지 못했어요"(CORS) | 백엔드 `AllowedOrigin`이 프론트 도메인을 허용하는지(기본 `*`는 허용). 좁힌 뒤 도메인 오타 확인 |
 
 > 운영 주의: 네이버 GraphQL **인트로스펙션 금지**(즉시 429 + 지속 차단),
 > 429 응답 시 무재시도 즉시 실패가 설계 정책이다 (`experiments/findings.md` §4).
