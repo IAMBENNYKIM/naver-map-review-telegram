@@ -69,6 +69,7 @@ class TestJobLifecycle:
             address="경기 성남시",
             review_count=50,
             cache_hit=True,
+            updated_at="2026-07-07T12:00:00+09:00",
         )
 
         job = web_store.get_job("job-2")
@@ -78,6 +79,8 @@ class TestJobLifecycle:
         assert job["address"] == "경기 성남시"
         assert job["review_count"] == 50
         assert job["cache_hit"] is True
+        # updated_at(요약 갱신 시점)이 그대로 기록돼야 한다.
+        assert job["updated_at"] == "2026-07-07T12:00:00+09:00"
         assert "+09:00" in job["completed_at"]
         # 생성 시 필드는 보존돼야 한다.
         assert job["identity"] == "친구A"
@@ -129,6 +132,34 @@ class TestWebCache:
         assert cached["summary_json"] == '{"overall": "총평"}'
         assert cached["review_count"] == 50
         assert "+09:00" in cached["updated_at"]
+
+    def test_저장하면_갱신시점_문자열을_반환한다(self, web_tables):
+        returned_updated_at = web_store.save_web_summary(
+            place_id="place-return",
+            place_name="돈멜 본점",
+            address="경기 성남시",
+            summary_json='{"overall": "총평"}',
+            review_count=50,
+        )
+
+        assert "+09:00" in returned_updated_at
+        # 반환값과 실제 저장된 updated_at이 일치해야 한다.
+        cached = web_store.get_web_cached_summary("place-return")
+        assert cached["updated_at"] == returned_updated_at
+
+    def test_저장_실패해도_갱신시점_문자열은_반환한다(self):
+        with patch.object(
+            web_store, "_cache_table", side_effect=RuntimeError("연결 실패")
+        ):
+            returned_updated_at = web_store.save_web_summary(
+                place_id="place-x",
+                place_name="이름",
+                address="주소",
+                summary_json="{}",
+                review_count=1,
+            )
+
+        assert "+09:00" in returned_updated_at
 
     def test_없는_place_id는_none을_반환한다(self, web_tables):
         assert web_store.get_web_cached_summary("no-such-place") is None

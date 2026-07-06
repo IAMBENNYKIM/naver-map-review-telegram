@@ -39,13 +39,14 @@ async def _async_main(event, context) -> dict:
     job_id = event.get("job_id")
     identity = event.get("identity", "")
     naver_url = event.get("naver_url")
+    force_refresh = bool(event.get("force_refresh", False))
 
     if not job_id:
         logger.error("잘못된 웹 Worker 이벤트 — job_id 없음, 무시")
         return {"statusCode": 200, "body": "invalid event ignored"}
 
     try:
-        _run_pipeline(job_id, identity, naver_url or "")
+        _run_pipeline(job_id, identity, naver_url or "", force_refresh=force_refresh)
     except naver_review_collector.ReviewCollectError as error:
         logger.warning("리뷰 수집 실패 (job_id=%s): %s", job_id, error)
         web_store.fail_job(job_id, _COLLECT_FAILURE_MESSAGE)
@@ -56,16 +57,21 @@ async def _async_main(event, context) -> dict:
     return {"statusCode": 200, "body": "ok"}
 
 
-def _run_pipeline(job_id: str, identity: str, naver_url: str) -> None:
+def _run_pipeline(
+    job_id: str, identity: str, naver_url: str, force_refresh: bool = False
+) -> None:
     """수집→분석→잡 완료 파이프라인 본체.
 
     캐시 조회 순서: web 캐시 → prod 캐시(read-through, 히트 시 web 캐시로 워밍).
+    force_refresh가 True면 캐시 조회를 건너뛰고 곧바로 신규 수집·분석 경로를 탄다
+    (Telegram의 /update와 동일 의미).
     """
     # 1) place 해석
     place_id = naver_review_collector.resolve_place(naver_url)["place_id"]
 
     # 2) 캐시 조회 — web 우선, 없으면 prod 캐시를 읽어 web 캐시에 워밍한다.
-    cached = _lookup_cache(place_id)
+    #    force_refresh면 캐시를 무시하고 신규 분석 경로로 직행한다.
+    cached = None if force_refresh else _lookup_cache(place_id)
     if cached is not None:
         web_store.complete_job(
             job_id,
@@ -74,6 +80,7 @@ def _run_pipeline(job_id: str, identity: str, naver_url: str) -> None:
             address=cached["address"],
             review_count=cached["review_count"],
             cache_hit=True,
+            updated_at=cached["updated_at"],
         )
         web_store.log_usage(identity, cache_hit=True)
         logger.info("캐시 히트로 잡 완료 (job_id=%s)", job_id)
@@ -97,7 +104,9 @@ def _run_pipeline(job_id: str, identity: str, naver_url: str) -> None:
     place_name = place_detail["name"]
     address = place_detail["address"]
     review_count = len(review_list)
-    web_store.save_web_summary(place_id, place_name, address, summary_json, review_count)
+    updated_at = web_store.save_web_summary(
+        place_id, place_name, address, summary_json, review_count
+    )
     web_store.complete_job(
         job_id,
         summary_json=summary_json,
@@ -105,6 +114,7 @@ def _run_pipeline(job_id: str, identity: str, naver_url: str) -> None:
         address=address,
         review_count=review_count,
         cache_hit=False,
+        updated_at=updated_at,
     )
     web_store.log_usage(identity, cache_hit=False)
     logger.info("신규 분석으로 잡 완료 (job_id=%s, 리뷰 %d건)", job_id, review_count)
@@ -143,4 +153,5 @@ def _normalize_cache_item(item: dict) -> dict:
         "place_name": item.get("place_name", ""),
         "address": item.get("address", ""),
         "review_count": int(item.get("review_count", 0)),
+        "updated_at": item.get("updated_at", ""),
     }
