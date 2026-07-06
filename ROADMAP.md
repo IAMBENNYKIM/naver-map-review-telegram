@@ -54,8 +54,8 @@
 - [x] 5-1 (D) 웹 코어 로직: `config.py` 확장(web 시크릿·테이블·킬스위치), `web_store.py`(jobs/usage/web캐시/prod 읽기전용 read-through), `web_auth.py`(세션토큰·초대코드·admin) + moto·단위 테스트 (커밋 0538b1b)
 - [x] 5-2 (D) Lambda 핸들러+인프라: `web_api_handler.py`(라우팅·초대/세션/잡생성/폴링/admin), `web_worker_handler.py`(resolve→캐시→collector→analyst→잡결과·사용량), `template-web.yaml`(WebApi+WebWorker 2함수·3테이블·IAM 최소권한·Budget Alarm·킬스위치) + 테스트
 - [x] 5-3 (A) 백엔드 검증: Advisor 직접 `pytest tests/` 152 passed, `sam validate --lint -t template-web.yaml` valid 확인 → 커밋. (배포·실AWS E2E는 5-5)
-- [ ] 5-4 (D) Next.js 15/shadcn PWA: 초대 게이트 + URL 입력 + 결과 카드(review_analyst JSON 렌더) + 폴링 + 관리자 통계 페이지, 웹 공유 타겟
-- [ ] 5-5 (A) E2E 검증·배포: 웹 스택 배포, Telegram 봇 무손상 확인, 신규/캐시히트/admin 시나리오 검증
+- [x] 5-4 (D) Next.js 15/shadcn PWA: 초대 게이트 + URL 입력 + 결과 카드(review_analyst JSON 렌더) + 폴링 + 관리자 통계 페이지, 웹 공유 타겟 (`web-frontend/`, npm run build/lint 통과, 커밋 952662f)
+- [ ] 5-5 (A) E2E 검증·배포 (**사용자 준비물 필요** — 아래 배포 런북): ① Secrets Manager `naver-review/web` 생성 ② `sam deploy -t template-web.yaml --stack-name naver-review-web` ③ Vercel 배포(Root Dir=web-frontend, NEXT_PUBLIC_API_BASE_URL=WebApiUrl) ④ AllowedOrigin을 Vercel 도메인으로 축소 재배포 ⑤ Telegram 봇 무손상 확인 + 신규/캐시히트/admin 시나리오 검증
 
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
