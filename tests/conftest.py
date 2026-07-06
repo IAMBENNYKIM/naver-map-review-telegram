@@ -23,6 +23,7 @@ os.environ["ANTHROPIC_API_KEY"] = "test-anthropic-key"
 os.environ["DYNAMO_TABLE_PREFIX"] = "dev_"
 os.environ["AWS_DEFAULT_REGION"] = "ap-northeast-2"
 os.environ["WORKER_FUNCTION_NAME"] = "test-worker-function"
+os.environ["WEB_WORKER_FUNCTION_NAME"] = "test-web-worker-function"
 
 # 웹 진입점(naver-review-web) 전용 시크릿 — config import 전에 확정한다.
 os.environ["WEB_SESSION_SECRET"] = "test-web-session-secret"

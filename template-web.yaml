@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  naver-review-web — 네이버 지도 리뷰 요약 웹 진입점 (Telegram 스택과 격리된 별도 스택).
+  HttpApi → WebApiFunction(검증·잡 생성·비동기 invoke·폴링 응답)
+  → WebWorkerFunction(수집·Claude 분석·잡 완료 기록). 응답 구조는 비동기 잡+폴링.
+
+# ---------------------------------------------------------------------------
+# 파라미터 (배포 시 --parameter-overrides 로 조정 가능)
+# ---------------------------------------------------------------------------
+Parameters:
+  TablePrefix:
+    Type: String
+    Default: prod_
+    Description: DynamoDB 테이블 접두사 (config.DYNAMO_TABLE_PREFIX 와 일치해야 함)
+  SecretsName:
+    Type: String
+    Default: naver-review/web
+    Description: 웹 전용 Secrets Manager 시크릿 이름 (config.SECRETS_NAME 와 일치)
+  ProdReviewCacheTable:
+    Type: String
+    Default: prod_review_cache
+    Description: >
+      기존 Telegram 캐시 테이블명 (read-through 읽기 전용 참조).
+      이 스택은 이 테이블을 정의하지 않는다 — Telegram 스택이 소유한다.
+  AllowedOrigin:
+    Type: String
+    Default: "*"
+    Description: >
+      CORS 허용 오리진. MVP 기본은 전체(*)이나,
+      배포 시 Vercel 프론트엔드 도메인으로 반드시 좁혀라.
+  BudgetLimitAmount:
+    Type: Number
+    Default: 30
+    Description: 월간 비용 예산 한도(USD).
+  BudgetNotificationEmail:
+    Type: String
+    Default: ""
+    Description: >
+      예산 알림 수신 이메일. 비어 있으면 예산 리소스를 생성하지 않는다
+      (Condition HasBudgetEmail).
+  LlmCommentaryEnabled:
+    Type: String
+    Default: "true"
+    Description: LLM 분석 기능 킬 스위치 (config.LLM_COMMENTARY_ENABLED). 비용 차단용.
+
+# ---------------------------------------------------------------------------
+# 조건 (이메일이 있을 때만 예산 리소스 생성)
+# ---------------------------------------------------------------------------
+Conditions:
+  HasBudgetEmail: !Not [!Equals [!Ref BudgetNotificationEmail, ""]]
+
+# ---------------------------------------------------------------------------
+# 공통 함수 설정 (런타임 python3.12)
+# ---------------------------------------------------------------------------
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures:
+      - x86_64
+
+Resources:
+  # -------------------------------------------------------------------------
+  # HttpApi — CORS 명시 설정 (프론트엔드 브라우저 호출용)
+  # -------------------------------------------------------------------------
+  WebHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - authorization
+          - content-type
+
+  # -------------------------------------------------------------------------
+  # WebApiFunction — 검증·잡 생성·WebWorkerFunction 비동기 invoke·폴링 응답 (빠른 응답)
+  # -------------------------------------------------------------------------
+  WebApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: naver-review-web-api
+      Handler: web_api_handler.lambda_handler
+      CodeUri: .
+      MemorySize: 256
+      Timeout: 10
+      Description: 초대·세션 발급 / 잡 생성 + 비동기 invoke / 결과 폴링 / 관리자 통계
+      Environment:
+        Variables:
+          # AWS_DEFAULT_REGION/AWS_REGION 은 Lambda 예약 키 — 런타임이 자동 주입(설정 금지).
+          # LOCAL_DEV 미설정(기본 false) → config 가 Secrets Manager 경로 사용.
+          SECRETS_NAME: !Ref SecretsName
+          DYNAMO_TABLE_PREFIX: !Ref TablePrefix
+          WEB_WORKER_FUNCTION_NAME: !Ref WebWorkerFunction
+      Events:
+        Invite:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /invite
+            Method: post
+        Analyze:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /analyze
+            Method: post
+        Result:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /result/{job_id}
+            Method: get
+        AdminStats:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /admin/stats
+            Method: get
+      Policies:
+        # 최소 권한: WebWorkerFunction 비동기 invoke + jobs 읽기/쓰기 + usage Scan + 시크릿 읽기
+        - Statement:
+            - Sid: InvokeWebWorkerFunction
+              Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt WebWorkerFunction.Arn
+            - Sid: JobsTableAccess
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt WebJobsTable.Arn
+            - Sid: UsageTableScan
+              Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource:
+                - !GetAtt WebUsageTable.Arn
+            - Sid: SecretsManagerRead
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsName}-*"
+
+  # -------------------------------------------------------------------------
+  # WebWorkerFunction — place 해석·수집·Claude 분석·잡 완료 기록 (무거운 파이프라인)
+  # -------------------------------------------------------------------------
+  WebWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: naver-review-web-worker
+      Handler: web_worker_handler.lambda_handler
+      CodeUri: .
+      MemorySize: 512
+      Timeout: 120
+      Description: place 해석 → 캐시(web/prod read-through) → 수집 → 분석 → 잡 완료 기록
+      Environment:
+        Variables:
+          SECRETS_NAME: !Ref SecretsName
+          DYNAMO_TABLE_PREFIX: !Ref TablePrefix
+          PROD_REVIEW_CACHE_TABLE: !Ref ProdReviewCacheTable
+          LLM_COMMENTARY_ENABLED: !Ref LlmCommentaryEnabled
+      Policies:
+        # 최소 권한: jobs 갱신 + web 캐시 읽기/쓰기 + usage 갱신 + prod 캐시 읽기(전용) + 시크릿
+        - Statement:
+            - Sid: JobsTableUpdate
+              Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt WebJobsTable.Arn
+            - Sid: WebCacheTableAccess
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource:
+                - !GetAtt WebCacheTable.Arn
+            - Sid: UsageTableUpdate
+              Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !GetAtt WebUsageTable.Arn
+            - Sid: ProdCacheReadOnly
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource:
+                # prod 캐시 테이블은 이 스택이 소유하지 않으므로 이름으로만 참조(읽기 전용).
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ProdReviewCacheTable}"
+            - Sid: SecretsManagerRead
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsName}-*"
+
+  # -------------------------------------------------------------------------
+  # DynamoDB — 웹 전용 리뷰 요약 캐시 (온디맨드, PK=place_key, TTL 미사용)
+  # -------------------------------------------------------------------------
+  WebCacheTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TablePrefix}web_review_cache"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: place_key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: place_key
+          KeyType: HASH
+
+  # -------------------------------------------------------------------------
+  # DynamoDB — 비동기 분석 잡 상태 (온디맨드, PK=job_id, TTL=ttl 로 1시간 후 자동 정리)
+  # -------------------------------------------------------------------------
+  WebJobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TablePrefix}web_jobs"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  # -------------------------------------------------------------------------
+  # DynamoDB — identity별 사용량 통계 (온디맨드, PK=identity)
+  # -------------------------------------------------------------------------
+  WebUsageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TablePrefix}web_usage"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: identity
+          AttributeType: S
+      KeySchema:
+        - AttributeName: identity
+          KeyType: HASH
+
+  # -------------------------------------------------------------------------
+  # AWS Budgets — 월간 비용 예산 알림 (이메일이 설정된 경우에만 생성)
+  # ★ 계정 전역(account-wide) 리소스다 — 특정 스택/서비스 한정이 아니라 계정 전체
+  #   비용을 추적한다. BudgetNotificationEmail이 비면 HasBudgetEmail=false로 생성 생략.
+  # -------------------------------------------------------------------------
+  MonthlyCostBudget:
+    Type: AWS::Budgets::Budget
+    Condition: HasBudgetEmail
+    Properties:
+      Budget:
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref BudgetLimitAmount
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetNotificationEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetNotificationEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetNotificationEmail
+
+# ---------------------------------------------------------------------------
+# 출력
+# ---------------------------------------------------------------------------
+Outputs:
+  WebApiUrl:
+    Description: 프론트엔드가 호출할 웹 API 베이스 URL
+    Value: !Sub "https://${WebHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  WebApiFunctionName:
+    Description: 웹 API 핸들러 함수명
+    Value: !Ref WebApiFunction
+  WebWorkerFunctionName:
+    Description: 웹 Worker 함수명 (WebApiFunction 환경변수·수동 test invoke 시 사용)
+    Value: !Ref WebWorkerFunction
+  WebCacheTableName:
+    Description: 웹 전용 리뷰 캐시 테이블명
+    Value: !Ref WebCacheTable
+  WebJobsTableName:
+    Description: 비동기 분석 잡 테이블명
+    Value: !Ref WebJobsTable
+  WebUsageTableName:
+    Description: 사용량 통계 테이블명
+    Value: !Ref WebUsageTable
