@@ -1,31 +1,44 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Link2, LogOut, Search, AlertCircle, Clock } from "lucide-react";
+import { LogOut, Search, AlertCircle, Clock } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { ResultCard } from "@/components/ResultCard";
 import { ApiError, fetchResult, requestAnalyze } from "@/lib/api";
-import { looksLikeNaverUrl } from "@/lib/naver-url";
+import { extractNaverUrl } from "@/lib/naver-url";
 import type { AnalysisResult } from "@/lib/types";
 
 /** 폴링 간격(ms)과 최대 시도 횟수. 약 60초 후 타임아웃. */
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_ATTEMPTS = 40;
 
+/** 붙여넣기 예시 placeholder (네이버 앱 공유 텍스트 형태). */
+const PASTE_PLACEHOLDER = [
+  "[네이버지도]",
+  "가게 이름",
+  "서울특별시 ...",
+  "https://naver.me/XXXXXXXX",
+].join("\n");
+
 const analyzeSchema = z.object({
+  // 필드 값은 URL 뿐 아니라 공유 텍스트 전체를 담을 수 있다.
   naverUrl: z
     .string()
     .trim()
     .min(1, "네이버 지도 주소를 입력해 주세요.")
-    .refine(looksLikeNaverUrl, "네이버 지도 주소(naver.me 등)로 보이지 않아요."),
+    .refine(
+      (value) => extractNaverUrl(value) !== null,
+      "네이버 지도 링크를 찾지 못했어요. 공유한 장소 정보를 그대로 붙여넣어 주세요.",
+    ),
 });
 
 type AnalyzeFormValues = z.infer<typeof analyzeSchema>;
@@ -56,9 +69,13 @@ export function AnalyzeView({
   const [phase, setPhase] = useState<Phase>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // 갱신(강제 재분석) 진행 여부 — 결과 카드의 갱신 버튼을 잠근다.
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   // 실행 세대 번호 — 새 요청/언마운트 시 이전 폴링 루프를 무효화한다.
   const runIdRef = useRef(0);
+  // 현재 결과의 원본 네이버 URL — 갱신 시 재사용한다.
+  const lastUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -83,19 +100,38 @@ export function AnalyzeView({
     onSessionExpired();
   }
 
-  async function onSubmit(values: AnalyzeFormValues) {
+  /**
+   * 분석 요청 → 폴링 → 결과 반영을 수행하는 공용 실행기.
+   * 폼 제출과 결과 카드의 "갱신하기"가 함께 사용한다.
+   */
+  async function runAnalysis(
+    naverUrl: string,
+    options?: { forceRefresh?: boolean },
+  ) {
+    const isRefresh = options?.forceRefresh ?? false;
     const runId = runIdRef.current + 1;
     runIdRef.current = runId;
+    lastUrlRef.current = naverUrl;
 
-    setResult(null);
     setErrorText(null);
-    setPhase("submitting");
+    if (isRefresh) {
+      // 갱신은 기존 결과 카드를 유지한 채 버튼만 잠근다.
+      setIsRefreshing(true);
+    } else {
+      setResult(null);
+      setIsRefreshing(false);
+      setPhase("submitting");
+    }
 
     let jobId: string;
     try {
-      jobId = await requestAnalyze(token, values.naverUrl.trim());
+      jobId = await requestAnalyze(token, naverUrl, isRefresh);
     } catch (error) {
+      if (runIdRef.current !== runId) {
+        return; // 더 최신 요청이 시작됨.
+      }
       if (error instanceof ApiError && error.isUnauthorized) {
+        setIsRefreshing(false);
         handleSessionExpired();
         return;
       }
@@ -105,13 +141,16 @@ export function AnalyzeView({
           : "분석 요청에 실패했어요. 잠시 후 다시 시도해 주세요.",
       );
       setPhase("error");
+      setIsRefreshing(false);
       return;
     }
 
     if (runIdRef.current !== runId) {
       return; // 더 최신 요청이 시작됨.
     }
-    setPhase("polling");
+    if (!isRefresh) {
+      setPhase("polling");
+    }
 
     for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
       await delay(POLL_INTERVAL_MS);
@@ -123,7 +162,11 @@ export function AnalyzeView({
       try {
         latest = await fetchResult(token, jobId);
       } catch (error) {
+        if (runIdRef.current !== runId) {
+          return;
+        }
         if (error instanceof ApiError && error.isUnauthorized) {
+          setIsRefreshing(false);
           handleSessionExpired();
           return;
         }
@@ -137,6 +180,7 @@ export function AnalyzeView({
             : "결과 조회 중 오류가 발생했어요.",
         );
         setPhase("error");
+        setIsRefreshing(false);
         return;
       }
 
@@ -147,11 +191,13 @@ export function AnalyzeView({
       if (latest.status === "done") {
         setResult(latest);
         setPhase("done");
+        setIsRefreshing(false);
         return;
       }
       if (latest.status === "error") {
         setErrorText(latest.errorMessage ?? "분석에 실패했어요.");
         setPhase("error");
+        setIsRefreshing(false);
         return;
       }
       // status === "processing" → 계속 폴링.
@@ -159,7 +205,24 @@ export function AnalyzeView({
 
     if (runIdRef.current === runId) {
       setPhase("timeout");
+      setIsRefreshing(false);
     }
+  }
+
+  function onSubmit(values: AnalyzeFormValues) {
+    const naverUrl = extractNaverUrl(values.naverUrl);
+    if (!naverUrl) {
+      // 스키마 검증이 이미 막지만 타입 좁히기를 위한 방어 코드.
+      return;
+    }
+    void runAnalysis(naverUrl);
+  }
+
+  function handleRefresh() {
+    if (!lastUrlRef.current) {
+      return;
+    }
+    void runAnalysis(lastUrlRef.current, { forceRefresh: true });
   }
 
   return (
@@ -181,23 +244,17 @@ export function AnalyzeView({
         <CardContent>
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
             <div className="space-y-1.5">
-              <Label htmlFor="naver-url">네이버 지도 주소</Label>
-              <div className="relative">
-                <Link2
-                  className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted"
-                  aria-hidden="true"
-                />
-                <Input
-                  id="naver-url"
-                  inputMode="url"
-                  autoComplete="url"
-                  placeholder="https://naver.me/..."
-                  className="pl-9"
-                  aria-invalid={Boolean(errors.naverUrl)}
-                  disabled={isBusy}
-                  {...register("naverUrl")}
-                />
-              </div>
+              <Label htmlFor="naver-url">
+                복사한 장소 정보를 여기에 붙여넣으세요
+              </Label>
+              <Textarea
+                id="naver-url"
+                rows={4}
+                placeholder={PASTE_PLACEHOLDER}
+                aria-invalid={Boolean(errors.naverUrl)}
+                disabled={isBusy}
+                {...register("naverUrl")}
+              />
               {errors.naverUrl ? (
                 <p className="text-xs text-rose-500">{errors.naverUrl.message}</p>
               ) : null}
@@ -252,7 +309,20 @@ export function AnalyzeView({
         </Card>
       ) : null}
 
-      {phase === "done" && result ? <ResultCard result={result} /> : null}
+      {phase === "done" && result ? (
+        <ResultCard
+          result={result}
+          onRefresh={handleRefresh}
+          isRefreshing={isRefreshing}
+        />
+      ) : null}
+
+      {/* 관리자 진입 링크 (눈에 띄지 않게) */}
+      <div className="pt-2 text-center">
+        <Link href="/admin" className="text-xs text-muted hover:underline">
+          관리자
+        </Link>
+      </div>
     </div>
   );
 }
