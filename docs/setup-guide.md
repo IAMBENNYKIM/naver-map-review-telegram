@@ -155,6 +155,19 @@ sam deploy --stack-name naver-review-web `
 
 배포 리소스: `WebApiFunction`(256MB/10s), `WebWorkerFunction`(512MB/120s), `web_review_cache`·`web_jobs`(TTL 1h)·`web_usage`, 조건부 `MonthlyCostBudget`. prod 캐시는 **읽기전용 read-through**(이름 참조, 이 스택이 소유하지 않음).
 
+**⚠️ 재배포(코드만 변경) 시 파라미터 전량 명시** — CLI `--parameter-overrides`는 **생략한 파라미터를 template 기본값으로 되돌린다**. 그냥 코드만 다시 올리려고 파라미터를 비우면 `AllowedOrigin`이 `*`로 **CORS가 원복**되고 `MonthlyCostBudget`이 **삭제**된다. 배포 전 현행값을 조회해 그대로 넘겨라:
+
+```bash
+# 1) 현재 파라미터 조회
+aws cloudformation describe-stacks --stack-name naver-review-web --profile naver-review --region ap-northeast-2 --query 'Stacks[0].Parameters' --output json
+# 2) build 후 조회한 값 전량 명시 + 비대화식(--no-confirm-changeset)
+sam build -t template-web.yaml
+sam deploy --stack-name naver-review-web --profile naver-review --region ap-northeast-2 --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset \
+  --parameter-overrides "SecretsName=naver-review/web TablePrefix=prod_ ProdReviewCacheTable=prod_review_cache AllowedOrigin=https://benny-naver-review.vercel.app BudgetLimitAmount=30 BudgetNotificationEmail=본인이메일 LlmCommentaryEnabled=true"
+```
+
+배포 후 **변경 범위 확인**(코드만이어야 함): `aws cloudformation describe-stack-events --stack-name naver-review-web ... --max-items 12` → `WebApiFunction`·`WebWorkerFunction`만 UPDATE, 테이블·API GW·IAM 무변경, Telegram 스택(`naver-map-review-telegram`)은 `LastUpdatedTime` 불변인지 대조. **스모크**: sandbox가 `curl`을 막으면 `aws lambda invoke`로 대체 — 무인증 `/admin/stats` 이벤트를 던져 `statusCode 401`이 오면 새 코드가 ImportError 없이 기동한 것.
+
 ### 8-3. 프론트 배포 (Vercel)
 
 1. vercel.com → GitHub 로그인(무료 Hobby) → **Add New → Project → Import Git Repository**(⚠️ 클론/템플릿 생성 아님).

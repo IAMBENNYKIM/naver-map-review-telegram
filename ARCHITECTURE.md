@@ -51,9 +51,9 @@ Telegram과 **완전히 격리된 별도 CloudFormation 스택**(제약: 기존 
 | `review_formatter.py` | 분석 JSON → MarkdownV2, 이스케이프 헬퍼 | 모든 동적 텍스트 이스케이프 강제 |
 | `dynamo_writer.py` | 캐시·last_query read/write | 쓰기 non-critical, float→Decimal |
 | `telegram_sender.py` | 발송·재시도(429/403/400)·개발자 에러 알림 | MarkdownV2 |
-| `web_api_handler.py` | WebApiFunction 진입점. 초대/세션·잡 생성+비동기 invoke·결과 폴링·`/admin` 통계 (HttpApi 라우팅) | 빠른 응답, 소유권 404, Decimal→JSON |
+| `web_api_handler.py` | WebApiFunction 진입점. 초대/세션·잡 생성+비동기 invoke·결과 폴링·`/admin/stats` 통계(일별 `daily` 포함) (HttpApi 라우팅) | 빠른 응답, 소유권 404, Decimal→JSON |
 | `web_worker_handler.py` | WebWorkerFunction 진입점. resolve→캐시(web/prod read-through)→수집→분석→잡 결과·사용량 | `asyncio.run` 래퍼, Telegram/formatter 없음 |
-| `web_store.py` | 웹 DynamoDB(jobs·web캐시·usage) + prod 캐시 read-through | `dynamo_writer` 규약(non-critical), 읽기전용 prod |
+| `web_store.py` | 웹 DynamoDB(jobs·web캐시·usage) + prod 캐시 read-through. `log_usage`는 누적 합계+일별 카운터(`req#`/`llm#`) ADD, `summarize_usage_item`이 `daily` 정돈 | `dynamo_writer` 규약(non-critical), 읽기전용 prod |
 | `web_auth.py` | HMAC 세션토큰 발급/검증·초대코드→identity·admin 토큰 | 상수시간 비교, 순수 로직 |
 
 ## 인프라 (template.yaml)
@@ -68,7 +68,7 @@ Telegram과 **완전히 격리된 별도 CloudFormation 스택**(제약: 기존 
 
 - **WebApiFunction**: python3.12, 256MB, 10s. HttpApi(CORS `AllowedOrigin`) 라우트 `POST /invite`·`POST /analyze`·`GET /result/{job_id}`·`GET /admin/stats`. 권한: WebWorker invoke, jobs Get/Put/Update·usage Scan, Secrets read.
 - **WebWorkerFunction**: python3.12, 512MB, 120s(비동기 invoke). 권한: jobs Update·webcache Get/Put·usage Update·**prod 캐시 GetItem(읽기전용, 이름 참조)**·Secrets read.
-- 테이블: `${TablePrefix}web_review_cache`(PK place_key), `${TablePrefix}web_jobs`(PK job_id, TTL `ttl`), `${TablePrefix}web_usage`(PK identity). 모두 PAY_PER_REQUEST.
+- 테이블: `${TablePrefix}web_review_cache`(PK place_key), `${TablePrefix}web_jobs`(PK job_id, TTL `ttl`), `${TablePrefix}web_usage`(PK identity, 누적 합계 + 일별 최상위 카운터 `req#YYYY-MM-DD`·`llm#YYYY-MM-DD`). 모두 PAY_PER_REQUEST. **일별 카운터는 스키마리스 속성 추가라 템플릿 변경 불필요.**
 - **MonthlyCostBudget**(Condition `HasBudgetEmail`): 계정 전역 월 예산 알림 50/80/100%.
 - Parameters: `TablePrefix`·`SecretsName`(기본 `naver-review/web`)·`ProdReviewCacheTable`·`AllowedOrigin`·`BudgetLimitAmount`·`BudgetNotificationEmail`·`LlmCommentaryEnabled`.
 - prod 캐시 테이블은 이 스택이 **정의하지 않음**(Telegram 스택 소유 — 이름으로만 참조).

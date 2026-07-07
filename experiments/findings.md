@@ -33,6 +33,7 @@
 ```
 
 - 실측: 200, 50건 전부 고유 id, total 895. input 원형은 Apollo `ROOT_QUERY."visitorReviews({...})"`의 실서비스 파라미터.
+- **기본 정렬 = 최신순(방문일 내림차순).** 요청에 정렬 파라미터를 넣지 않고 `item:"0"`만 보내면 네이버 서버 기본 정렬을 받는데, 이것이 **최신순**이다. 근거: `dumps/step5_B_full_p1s50.json`의 `representativeVisitDateTime`가 50건 완전 내림차순 + 라이브 재확인(2026-07-07, `naver.me/G58TjgA7`). ⚠️ **네이버 리뷰 탭 UI 기본값은 "추천순"이라 서로 다르다** — 사용자에게 "우리가 읽는 순서"를 안내할 땐 UI에서 정렬을 '최신순'으로 바꿔야 같아진다고 설명해야 한다.
 - 헤더: `Content-Type: application/json` + 모바일 Chrome UA. **Referer는 제거해도 정상 동작** (비용 없으니 유지 권장).
 
 ## 2. 응답 스키마 (근거: `dumps/step5_B_full_p1s50.json`)
