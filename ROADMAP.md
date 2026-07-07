@@ -1,6 +1,6 @@
 # ROADMAP.md — 개발 로드맵 (진행 상태의 단일 진실 공급원)
 
-**현재 상태: MVP 배포 완료·운영 중 (2026-07-05).** 신규 조회 E2E 검증 완료. 남은 확인은 사용자 폰에서의 캐시 히트·/update 시나리오뿐.
+**현재 상태: MVP + 웹 진입점 모두 라이브 (2026-07-07).** Telegram 봇(`naver-map-review-telegram`) 운영 중 + 웹 진입점(`naver-review-web` 스택 + Vercel `benny-naver-review.vercel.app`) 배포·CORS 축소·프로덕션 E2E 확인 완료. Phase 0~5 전부 닫힘. 이후 작업은 백로그(Phase 6+) 참조.
 
 작업 완료 시 체크박스를 갱신한다. 태스크 담당: A=Advisor 직접, D=worker-dev, S=worker-scraper.
 
@@ -56,12 +56,12 @@
 - [x] 5-2b (D) **배포 패키지 250MB 초과 긴급 수정**: 배포 Python 13개+`requirements.txt`를 `src/`로 이동, 두 템플릿 `CodeUri: src/` → 함수당 44MB (원인: 루트 `CodeUri: .`가 `.venv`·`web-frontend/node_modules`·`.git` 포함, sam build는 .gitignore 무시). 커밋 5457031. 교훈은 `docs/setup-guide.md` §8·`CLAUDE.md` #14에 반영
 - [x] 5-3 (A) 백엔드 검증: Advisor 직접 `pytest tests/` 152 passed, `sam validate --lint -t template-web.yaml` valid 확인 → 커밋. (배포·실AWS E2E는 5-5)
 - [x] 5-4 (D) Next.js 15/shadcn PWA: 초대 게이트 + URL 입력 + 결과 카드(review_analyst JSON 렌더) + 폴링 + 관리자 통계 페이지, 웹 공유 타겟 (`web-frontend/`, npm run build/lint 통과, 커밋 952662f)
-- [~] 5-5 (A) E2E 검증·배포 (사용자 수행 — 런북·함정은 `docs/setup-guide.md` §8):
+- [x] 5-5 (A) E2E 검증·배포 (런북·함정은 `docs/setup-guide.md` §8):
   - [x] 백엔드 배포: 시크릿 `naver-review/web` 생성 → `sam build -t template-web.yaml` → `sam deploy --stack-name naver-review-web`(‑t 없이·`--parameter-overrides` 명시) 성공, `WebApiUrl` 확보 (250MB 이슈는 5-2b로 해결)
-  - [x] 프론트 배포: Vercel Import(Root=`web-frontend`, `NEXT_PUBLIC_API_BASE_URL`=WebApiUrl) 성공. **프로덕션 반영은 `main` 병합 필요** — feature 브랜치 push는 Preview만 생성(Vercel Production Branch=main). `main` ff/rebase 후 push로 프로덕션 배포 완료
+  - [x] 프론트 배포: Vercel Import(Root=`web-frontend`, `NEXT_PUBLIC_API_BASE_URL`=WebApiUrl) 성공. **프로덕션 반영은 `main` 병합 필요** — feature 브랜치 push는 Preview만 생성(Vercel Production Branch=main). `main` ff/rebase 후 push로 프로덕션 배포 완료. URL은 `benny-naver-review.vercel.app`(Vercel 프로젝트 rename)
   - [x] 웹 신규 분석 E2E 확인: 붙여넣기 → 요약 정상 동작 (프로덕션 URL)
-  - [ ] CORS 축소: `AllowedOrigin=https://benny-naver-review.vercel.app`로 재배포 (명령 준비됨, 사용자 실행 대기)
-  - [ ] 잔여 검증: 캐시히트 배지·갱신 흐름 / `/admin` 통계 / 기존 Telegram 봇 무손상
+  - [x] CORS 축소: `AllowedOrigin=https://benny-naver-review.vercel.app`로 재배포 완료 (`WebHttpApi`만 `UPDATE_COMPLETE`, 스택 격리 유지 — Telegram 무손상)
+  - [x] 잔여 검증: 사용자 프로덕션 E2E "잘 동작" 확인 (붙여넣기·복사·공유·갱신·관리자·분석)
 
 - [x] 5-6 (A) 웹 UX 개선 6종 (Telegram 패리티, 2026-07-07):
   - **URL 확정(#1)**: `benny-naver-review.vercel.app` (Vercel 프로젝트 rename). 코드 브랜딩은 이미 중립.
