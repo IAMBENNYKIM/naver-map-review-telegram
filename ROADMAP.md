@@ -58,14 +58,24 @@
 - [x] 5-4 (D) Next.js 15/shadcn PWA: 초대 게이트 + URL 입력 + 결과 카드(review_analyst JSON 렌더) + 폴링 + 관리자 통계 페이지, 웹 공유 타겟 (`web-frontend/`, npm run build/lint 통과, 커밋 952662f)
 - [~] 5-5 (A) E2E 검증·배포 (사용자 수행 — 런북·함정은 `docs/setup-guide.md` §8):
   - [x] 백엔드 배포: 시크릿 `naver-review/web` 생성 → `sam build -t template-web.yaml` → `sam deploy --stack-name naver-review-web`(‑t 없이·`--parameter-overrides` 명시) 성공, `WebApiUrl` 확보 (250MB 이슈는 5-2b로 해결)
-  - [x] 프론트 배포: Vercel Import(Root=`web-frontend`, `NEXT_PUBLIC_API_BASE_URL`=WebApiUrl) 성공, 초대 게이트 렌더 확인
-  - [ ] CORS 축소: `AllowedOrigin`을 Vercel 도메인으로 재배포
-  - [ ] 최종 검증: Telegram 봇 무손상 + 웹 신규/캐시히트/`/admin` 시나리오
+  - [x] 프론트 배포: Vercel Import(Root=`web-frontend`, `NEXT_PUBLIC_API_BASE_URL`=WebApiUrl) 성공. **프로덕션 반영은 `main` 병합 필요** — feature 브랜치 push는 Preview만 생성(Vercel Production Branch=main). `main` ff/rebase 후 push로 프로덕션 배포 완료
+  - [x] 웹 신규 분석 E2E 확인: 붙여넣기 → 요약 정상 동작 (프로덕션 URL)
+  - [ ] CORS 축소: `AllowedOrigin=https://benny-naver-review.vercel.app`로 재배포 (명령 준비됨, 사용자 실행 대기)
+  - [ ] 잔여 검증: 캐시히트 배지·갱신 흐름 / `/admin` 통계 / 기존 Telegram 봇 무손상
+
+- [x] 5-6 (A) 웹 UX 개선 6종 (Telegram 패리티, 2026-07-07):
+  - **URL 확정(#1)**: `benny-naver-review.vercel.app` (Vercel 프로젝트 rename). 코드 브랜딩은 이미 중립.
+  - **결과 복사(#2)·공유(#3)**: `ResultCard` 액션바 — 복사하기(평문 클립보드, `summary-text.buildShareText`가 Telegram 포맷 이스케이프 없이 재현) + 공유하기(Web Share API, 미지원 시 복사 폴백). Kakao SDK 리치공유는 백로그.
+  - **붙여넣기 URL 자동감지(#4)**: 입력 Textarea 전환, 공유 텍스트 통째 붙여넣기 → `extractNaverUrl` 추출.
+  - **갱신 시점·갱신 버튼(#5)**: `updated_at`을 `/result`까지 전파(백엔드 `save_web_summary`→`complete_job`) + `force_refresh`로 캐시 무시 재분석(Telegram `/update` 패리티).
+  - **관리자 링크(#6)**: `/admin` 진입 링크 추가(페이지는 기존).
+  - worker-dev 2병렬(백엔드/프론트) → Advisor 검증(`pytest` 156 passed / `next build` 통과) → 커밋 `000b3fa`(백엔드)·`fd8e7d7`(프론트), `main` 반영.
 
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
 - per-identity 일일 쿼터 (Phase 6 — 웹 확산 시. 5-1 사용량 카운터 재사용)
 - 카카오 소셜 로그인 전환 / 카카오 채널·알림톡
+- 카카오 SDK 리치 공유(피드 템플릿) — 카카오 개발자 앱 등록·JS키·도메인 등록 필요 (현재는 Web Share API로 대체)
 
 - 장소명 텍스트 검색 (URL 없이)
 - 개인 리뷰 기록/조회 (/review, /review_update — UC-3)
