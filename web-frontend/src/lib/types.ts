@@ -47,10 +47,22 @@ export interface AnalysisResult {
   errorMessage: string | null;
 }
 
+/** `GET /admin/stats` 응답의 일자별 사용량 한 칸. */
+export interface DailyUsage {
+  /** `YYYY-MM-DD` 형태의 날짜 (KST 기준). */
+  date: string;
+  /** 그 날의 총 요청 수. */
+  total: number;
+  /** 그 날의 LLM 호출 수. */
+  llm: number;
+}
+
 /** `GET /admin/stats` 응답의 사용량 한 행. */
 export interface UsageRow {
   identity: string;
   totalCount: number;
   llmCallCount: number;
   lastUsedAt: string;
+  /** 일자별 사용량 (날짜 오름차순). 과거 데이터는 비어 있을 수 있다. */
+  daily: DailyUsage[];
 }

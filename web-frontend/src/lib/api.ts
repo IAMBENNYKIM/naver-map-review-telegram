@@ -7,6 +7,7 @@
 
 import type {
   AnalysisResult,
+  DailyUsage,
   ReviewSummary,
   SummaryMenu,
   UsageRow,
@@ -236,6 +237,39 @@ export async function fetchResult(
   };
 }
 
+/** 숫자로 강제 변환한다. 유한수가 아니면 0. */
+function toFiniteNumber(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * 응답의 daily 필드를 방어적으로 매핑한다.
+ * 배열이 아니거나 각 원소가 온전치 않으면 안전한 기본값으로 채운다.
+ */
+function toDailyUsage(value: unknown): DailyUsage[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const result: DailyUsage[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const date = typeof record.date === "string" ? record.date : "";
+    if (!date) {
+      continue;
+    }
+    result.push({
+      date,
+      total: toFiniteNumber(record.total),
+      llm: toFiniteNumber(record.llm),
+    });
+  }
+  return result;
+}
+
 /** `GET /admin/stats` — 관리자 사용량 통계를 조회한다. */
 export async function fetchAdminStats(adminToken: string): Promise<UsageRow[]> {
   const data = await request<{
@@ -244,6 +278,7 @@ export async function fetchAdminStats(adminToken: string): Promise<UsageRow[]> {
       total_count: number;
       llm_call_count: number;
       last_used_at: string;
+      daily?: unknown;
     }>;
   }>({
     method: "GET",
@@ -253,8 +288,9 @@ export async function fetchAdminStats(adminToken: string): Promise<UsageRow[]> {
 
   return (data.usage ?? []).map((row) => ({
     identity: row.identity,
-    totalCount: row.total_count,
-    llmCallCount: row.llm_call_count,
+    totalCount: toFiniteNumber(row.total_count),
+    llmCallCount: toFiniteNumber(row.llm_call_count),
     lastUsedAt: row.last_used_at,
+    daily: toDailyUsage(row.daily),
   }));
 }

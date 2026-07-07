@@ -11,6 +11,17 @@
   --border: #e6e8ea;
   --muted: #6b7280;
   --accent: #03c75a; /* 네이버 그린 */
+
+  /*
+   * 사용량 차트용 6색 팔레트 (dataviz 검증 팔레트 slot 1~6, 라이트).
+   * 사용자 인덱스 기반으로 순환한다.
+   */
+  --chart-1: #2a78d6;
+  --chart-2: #1baf7a;
+  --chart-3: #eda100;
+  --chart-4: #008300;
+  --chart-5: #4a3aa7;
+  --chart-6: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -21,6 +32,14 @@
     --border: #262b31;
     --muted: #9aa2ac;
     --accent: #05d466;
+
+    /* 동일 팔레트를 다크 표면용으로 스텝한 값. */
+    --chart-1: #3987e5;
+    --chart-2: #199e70;
+    --chart-3: #c98500;
+    --chart-4: #008300;
+    --chart-5: #9085e9;
+    --chart-6: #e66767;
   }
 }
 
