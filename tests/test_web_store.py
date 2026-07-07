@@ -251,6 +251,23 @@ class TestUsage:
         assert usage["total_count"] == 3
         assert usage["llm_call_count"] == 2
 
+    def test_같은_날짜_호출은_일별_카운터에_누적된다(self, web_tables):
+        from datetime import datetime, timezone, timedelta
+
+        today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+        web_store.log_usage("친구A", cache_hit=True)   # req +1, llm +0
+        web_store.log_usage("친구A", cache_hit=False)  # req +1, llm +1
+
+        usage = web_tables["usage"].get_item(
+            Key={"identity": "친구A"}
+        )["Item"]
+        # 누적 합계
+        assert usage["total_count"] == 2
+        assert usage["llm_call_count"] == 1
+        # 일별 최상위 카운터
+        assert usage[f"req#{today}"] == 2
+        assert usage[f"llm#{today}"] == 1
+
     def test_기록_실패는_예외를_전파하지_않는다(self):
         with patch.object(
             web_store, "_usage_table", side_effect=RuntimeError("연결 실패")
@@ -270,6 +287,59 @@ class TestUsage:
             web_store, "_usage_table", side_effect=RuntimeError("연결 실패")
         ):
             assert web_store.get_all_usage() == []
+
+
+# ---------------------------------------------------------------------------
+# 일별 시계열 정돈 (summarize_usage_item)
+# ---------------------------------------------------------------------------
+class TestSummarizeUsageItem:
+    def test_일별_카운터를_날짜별로_묶는다(self):
+        item = {
+            "identity": "벤",
+            "total_count": Decimal(3),
+            "llm_call_count": Decimal(1),
+            "last_used_at": "2026-07-07T12:00:00+09:00",
+            "req#2026-07-05": Decimal(1),
+            "llm#2026-07-05": Decimal(1),
+            "req#2026-07-07": Decimal(2),
+        }
+
+        summary = web_store.summarize_usage_item(item)
+
+        assert summary["identity"] == "벤"
+        assert summary["total_count"] == Decimal(3)
+        assert summary["llm_call_count"] == Decimal(1)
+        assert summary["last_used_at"] == "2026-07-07T12:00:00+09:00"
+        # 오름차순 정렬 + 없는 지표(2026-07-07의 llm)는 0으로 채움
+        assert summary["daily"] == [
+            {"date": "2026-07-05", "total": Decimal(1), "llm": Decimal(1)},
+            {"date": "2026-07-07", "total": Decimal(2), "llm": 0},
+        ]
+
+    def test_일별_키가_없으면_daily는_빈_리스트다(self):
+        item = {
+            "identity": "벤",
+            "total_count": Decimal(0),
+            "llm_call_count": Decimal(0),
+        }
+
+        summary = web_store.summarize_usage_item(item)
+
+        assert summary["daily"] == []
+        # 없는 필드는 기본값으로 채운다
+        assert summary["last_used_at"] == ""
+
+    def test_유사하지만_다른_키는_무시한다(self):
+        # "req#"·"llm#" 접두라도 날짜 형식이 아니면 매칭하지 않는다
+        item = {
+            "identity": "벤",
+            "req#not-a-date": Decimal(9),
+            "requests": Decimal(9),
+        }
+
+        summary = web_store.summarize_usage_item(item)
+
+        assert summary["daily"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ identity(표시이름)는 PII가 아니므로 로깅 가능하다.
 """
 
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +27,9 @@ import config
 from dynamo_writer import convert_floats_to_decimal
 
 logger = logging.getLogger(__name__)
+
+# 일별 카운터 최상위 속성명 패턴 — "req#YYYY-MM-DD"(총요청)·"llm#YYYY-MM-DD"(LLM 호출)
+_DAILY_KEY_PATTERN = re.compile(r"^(req|llm)#(\d{4}-\d{2}-\d{2})$")
 
 # 한국 표준시(KST) — created_at/updated_at/last_used_at ISO 8601 표기에 사용
 _KST = timezone(timedelta(hours=9))
@@ -227,18 +231,30 @@ def get_prod_cached_summary(place_id: str) -> dict | None:
 def log_usage(identity: str, cache_hit: bool) -> None:
     """identity의 사용량을 원자적으로 누적한다. 실패는 로깅만(비크리티컬).
 
-    - total_count: 호출마다 +1
+    - total_count: 호출마다 +1 (누적 합계)
     - llm_call_count: 캐시 미스(cache_hit=False)일 때만 +1 (미스 = 실제 LLM 호출 = 비용)
+    - req#YYYY-MM-DD: 오늘(KST) 총요청 카운터 +1 (일별 시계열)
+    - llm#YYYY-MM-DD: 오늘(KST) LLM 호출 카운터 +1 (캐시 미스일 때만)
     - last_used_at: 최근 사용 시각(KST ISO)
+
+    일별 카운터는 DynamoDB ``ADD``로 누적한다. ``ADD``는 없는 최상위 숫자 속성을
+    0으로 자동 초기화하므로 별도 초기화 왕복 없이 1회 호출로 끝난다. 속성명에
+    ``#``·``-``가 들어가므로 ``ExpressionAttributeNames`` 별칭을 반드시 쓴다.
     """
     llm_increment = 0 if cache_hit else 1
+    today = datetime.now(_KST).date().isoformat()
     try:
         _usage_table().update_item(
             Key={"identity": identity},
             UpdateExpression=(
-                "ADD total_count :one, llm_call_count :llm_increment "
+                "ADD total_count :one, llm_call_count :llm_increment, "
+                "#req_day :one, #llm_day :llm_increment "
                 "SET last_used_at = :last_used_at"
             ),
+            ExpressionAttributeNames={
+                "#req_day": f"req#{today}",
+                "#llm_day": f"llm#{today}",
+            },
             ExpressionAttributeValues={
                 ":one": 1,
                 ":llm_increment": llm_increment,
@@ -247,6 +263,56 @@ def log_usage(identity: str, cache_hit: bool) -> None:
         )
     except Exception as error:  # noqa: BLE001 (사용량 기록 실패는 비크리티컬)
         logger.warning("사용량 기록 실패(무시, identity=%s): %s", identity, error)
+
+
+def summarize_usage_item(item: dict) -> dict:
+    """원시 web_usage 항목을 관리자 응답용으로 정돈한다(일별 시계열 재구성).
+
+    ``get_all_usage()``가 scan으로 반환한 원시 항목에서 ``req#*``·``llm#*`` 최상위
+    키를 파싱해 날짜별로 묶는다. 값 타입 변환(Decimal→JSON)은 여기서 하지 않고
+    형태만 재구성한다 — 호출부(``web_api_handler._to_jsonable``)가 재귀 변환한다.
+
+    반환 형태::
+
+        {
+            "identity": <str>,
+            "total_count": <원시 값 또는 0>,
+            "llm_call_count": <원시 값 또는 0>,
+            "last_used_at": <원시 값 또는 "">,
+            "daily": [{"date": "YYYY-MM-DD", "total": <req>, "llm": <llm>}, ...],
+        }
+
+    ``daily``는 date 문자열 오름차순(사전식 = 날짜순)으로 정렬하며, 어느 한 지표만
+    있는 날짜는 없는 쪽을 0으로 채운다.
+    """
+    daily_by_date: dict[str, dict[str, int]] = {}
+    for key, value in item.items():
+        matched = _DAILY_KEY_PATTERN.match(str(key))
+        if not matched:
+            continue
+        metric, date_string = matched.group(1), matched.group(2)
+        bucket = daily_by_date.setdefault(date_string, {"total": 0, "llm": 0})
+        if metric == "req":
+            bucket["total"] = value
+        else:
+            bucket["llm"] = value
+
+    daily = [
+        {
+            "date": date_string,
+            "total": daily_by_date[date_string]["total"],
+            "llm": daily_by_date[date_string]["llm"],
+        }
+        for date_string in sorted(daily_by_date)
+    ]
+
+    return {
+        "identity": item.get("identity"),
+        "total_count": item.get("total_count", 0),
+        "llm_call_count": item.get("llm_call_count", 0),
+        "last_used_at": item.get("last_used_at", ""),
+        "daily": daily,
+    }
 
 
 def get_all_usage() -> list[dict]:

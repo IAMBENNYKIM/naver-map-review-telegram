@@ -238,7 +238,15 @@ class TestResult:
 class TestAdminStats:
     def test_관리자_토큰이면_사용량을_반환한다(self):
         usage = [
-            {"identity": "친구A", "total_count": Decimal("3"), "llm_call_count": Decimal("1")}
+            {
+                "identity": "친구A",
+                "total_count": Decimal("3"),
+                "llm_call_count": Decimal("1"),
+                "last_used_at": "2026-07-07T12:00:00+09:00",
+                "req#2026-07-05": Decimal("1"),
+                "llm#2026-07-05": Decimal("1"),
+                "req#2026-07-07": Decimal("2"),
+            }
         ]
         event = build_event(
             "GET", "/admin/stats", headers=bearer(ADMIN_TOKEN)
@@ -251,6 +259,13 @@ class TestAdminStats:
         # Decimal 직렬화 확인
         assert body["usage"][0]["total_count"] == 3
         assert body["usage"][0]["llm_call_count"] == 1
+        # 일별 시계열이 정돈돼 포함되고 Decimal이 JSON 정수로 직렬화된다.
+        assert body["usage"][0]["daily"] == [
+            {"date": "2026-07-05", "total": 1, "llm": 1},
+            {"date": "2026-07-07", "total": 2, "llm": 0},
+        ]
+        # 원시 일별 키는 최상위에 노출되지 않는다(정돈된 형태만).
+        assert "req#2026-07-05" not in body["usage"][0]
 
     def test_토큰이_틀리면_401을_반환한다(self):
         event = build_event(

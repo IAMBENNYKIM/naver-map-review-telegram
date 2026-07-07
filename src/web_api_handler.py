@@ -144,7 +144,10 @@ def _handle_admin_stats(event: dict) -> dict:
         logger.warning("관리자 인증 실패 — 401")
         return _response(401, {"error": "unauthorized"})
 
-    usage = web_store.get_all_usage()
+    usage = [
+        web_store.summarize_usage_item(item)
+        for item in web_store.get_all_usage()
+    ]
     return _response(200, {"usage": _to_jsonable(usage)})
 
 
