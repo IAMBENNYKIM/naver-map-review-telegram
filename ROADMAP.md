@@ -71,6 +71,13 @@
   - **관리자 링크(#6)**: `/admin` 진입 링크 추가(페이지는 기존).
   - worker-dev 2병렬(백엔드/프론트) → Advisor 검증(`pytest` 156 passed / `next build` 통과) → 커밋 `000b3fa`(백엔드)·`fd8e7d7`(프론트), `main` 반영.
 
+- [~] 5-7 (A/D) 관리자 통계 강화 + 초대 페이지 설명 3종 (2026-07-07, 브랜치 `feature/admin-stats-and-invite-info`):
+  - **관리자 통계 일별 시계열(#1)**: `web_store.log_usage`에 `req#YYYY-MM-DD`·`llm#YYYY-MM-DD` 일별 최상위 카운터를 `ADD`로 누적(새 테이블·인프라 무변경, 스키마리스), `summarize_usage_item`으로 `/admin/stats`에 `daily` 배열 제공. 프론트: 연월 구간 필터·지표 토글(총요청/LLM/둘다)·표 범위 연동 + recharts 사용자별 일별 꺾은선(총요청 실선·LLM 점선). 커밋 `89324e8`(백엔드)·`aabf6df`(프론트).
+  - **관리자 나가기(#2)**: `/admin`에 "← 홈으로" 링크 + "나가기"(토큰·상태 초기화).
+  - **초대 페이지 설명(#3)**: 실측 확정 사실만으로 작동 방식·신뢰 설명 추가. **정렬 실측**: 우리 GraphQL은 정렬 파라미터 없이 네이버 기본=**최신순**을 받는다(덤프 방문일 내림차순 + 라이브 `naver.me/G58TjgA7` 재확인). 네이버 UI 기본은 추천순이라 다름 → "리뷰 탭 정렬을 '최신순'으로 바꿔 대조"로 안내. 메뉴 언급 숫자 출처=리뷰 탭 '메뉴' 칩.
+  - 검증(Advisor 직접): `pytest tests/` 160 passed, `npm run build`·`lint` 그린, diff·계약(`daily`) 대조 완료.
+  - **잔여**: 배포(백엔드 `sam build`/`deploy` → 프론트 `main` 병합 → Vercel). 사용자 확인 후 진행.
+
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
 - per-identity 일일 쿼터 (Phase 6 — 웹 확산 시. 5-1 사용량 카운터 재사용)
