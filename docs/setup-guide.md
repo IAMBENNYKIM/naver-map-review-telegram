@@ -72,6 +72,8 @@ aws secretsmanager create-secret `
 
 ## 5. 배포 (sam build && sam deploy)
 
+> Claude Code 세션에서의 반복 배포는 `/deploy-telegram` 스킬(`.claude/skills/deploy-telegram/`)이 이 절차를 검증 단계까지 포함해 수행한다.
+
 ```powershell
 sam validate --lint      # 템플릿 검증 (자격증명 불필요)
 sam build                # src/requirements.txt(런타임 최소)만 설치해 패키징
@@ -135,6 +137,8 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"   # WEB_SESSION_SEC
 (`WEB_INVITE_CODES` 값은 JSON 문자열 안의 JSON이라 따옴표 이스케이프 필요.)
 
 ### 8-2. 백엔드 배포 (sam build/deploy) — ⚠️ 함정 3가지 (이 세션 실측)
+
+> Claude Code 세션에서의 반복 배포는 `/deploy-web` 스킬(`.claude/skills/deploy-web/`)이 아래 함정 회피와 검증(변경 범위·Telegram 무손상·스모크)을 절차화해 수행한다.
 
 1. **`sam deploy`에 `-t`를 붙이지 마라.** `sam build -t template-web.yaml`이 산출물을 `.aws-sam/build/`(deps 포함)에 만들고, **`-t` 없는** `sam deploy`가 그걸 배포한다. `-t template-web.yaml`로 소스를 직접 배포하면 httpx/anthropic 누락 → 런타임 ImportError.
 2. **`--stack-name naver-review-web` 필수.** `samconfig.toml`은 Telegram 전용(`stack_name=naver-map-review-telegram`)이라, 빠뜨리면 웹 템플릿이 **기존 봇 스택을 덮어쓴다**.
