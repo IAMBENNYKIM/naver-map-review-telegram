@@ -22,8 +22,10 @@ venv/
 # lambda invoke 임시 출력
 response.json
 
-# Claude Code (worktree·로컬 메타)
-.claude/
+# Claude Code — 로컬 메타는 제외하되 에이전트·스킬 정의는 버전 관리
+.claude/*
+!.claude/agents/
+!.claude/skills/
 
 # Shrimp Task Manager (프로젝트별 task 데이터 · 자체 git 저장소)
 .shrimp/
