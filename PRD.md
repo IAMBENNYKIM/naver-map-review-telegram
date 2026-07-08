@@ -123,10 +123,8 @@ Webhook payload → Worker 전달 이벤트: `{"chat_id": int, "action": "analyz
 
 ## 8. 미확정 사항 해소 (2026-07-04 실측 완료)
 
-- ~~네이버 리뷰 엔드포인트·페이지네이션·응답 스키마~~ → **확정**: naver.me 리다이렉트 `pinId` → m.place HTML(Apollo state) → pcmap-api GraphQL `getVisitorReviews` `size=50` 1회. httpx 단독 가능, Playwright 불필요. 전문은 `experiments/findings.md`.
+- ~~네이버 리뷰 엔드포인트·페이지네이션·응답 스키마~~ → **확정: httpx 단독 가능, Playwright 불필요.** 요청 시퀀스·스키마·운영 주의(모바일 UA·인트로스펙션 금지·429 무재시도)의 원천은 `experiments/findings.md`.
 - ~~`visited_menus` 제공 여부~~ → 개별 리뷰에는 없음. F4는 **리뷰 본문 텍스트 + 장소 레벨 `menu_stats`** 를 함께 근거로 집계.
-- 운영 주의: GraphQL 인트로스펙션 금지(즉시 429 차단), 429 시 무재시도 즉시 실패 처리.
-- **모바일 UA 필수** (2026-07-05 실기기 E2E에서 발견): `m.place.naver.com`이 데스크톱 UA를 429로 차단 → `config.NAVER_REQUEST_HEADERS`는 모바일 Chrome UA 사용. AWS Lambda IP도 정상 동작 확인.
 
 ## 9. 요청당 비용 (2026-07-05 실측 기준)
 
@@ -135,3 +133,9 @@ Webhook payload → Worker 전달 이벤트: `{"chat_id": int, "action": "analyz
 - **캐시 히트 / 안내 메시지**: Claude 호출 없음 → **사실상 0원**.
 - **AWS**: Lambda·API Gateway·DynamoDB는 프리 티어·소액으로 요청당 반올림 0원. 고정비는 Secrets Manager ≈ **$0.40/월**.
 - 비용 절감 레버: 모델 다운그레이드(`ANTHROPIC_MODEL`), `REVIEW_FETCH_LIMIT` 축소, 전역 캐시로 식당당 1회만 과금.
+
+## 10. 웹 진입점 (MVP 이후 확장 — 2026-07-07 라이브)
+
+Telegram 미사용 지인용 웹 진입점을 **별도 격리 스택**(`naver-review-web`) + Vercel 정적 PWA로 추가했다. 핵심: 초대코드→HMAC 세션, 비동기 잡+폴링(API GW 30초 타임아웃 회피), Telegram 캐시 읽기전용 read-through, 관리자 사용량 통계(누적+일별). 본 PRD의 §4 JSON 계약·§5 리뷰 dict 계약을 그대로 재사용하며 렌더만 카드 UI로 대체한다.
+
+- 설계 결정·근거: `docs/web-design.md` / 코드·인프라: `ARCHITECTURE.md` / 배포: `docs/setup-guide.md` §8

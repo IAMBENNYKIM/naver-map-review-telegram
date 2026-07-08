@@ -10,7 +10,7 @@
 
 ## 2. 타겟 사용자 및 유스케이스
 
-- **사용자**: 개발자 본인 및 소수 지인 (개인용, 허용목록 기반).
+- **사용자**: 개발자 본인 및 소수 지인 (개인용). Telegram은 chat_id 허용목록, 웹은 초대코드제.
 - **동기**: 데이트 장소 선정, "뭐 먹지?" 결정 과정의 효율화.
 - **가치 우선순위**: 편의성 > 속도 > 비용.
 
@@ -37,12 +37,13 @@
 | F8 | 안내 | /start, /help, 잘못된 입력 시 사용법 안내 |
 
 **MVP 제외**: 장소명 텍스트 검색, 개인 리뷰 기록(UC-3), 다국어, 웹 UI, 수익화.
+(웹 UI는 MVP 이후 Phase 5에서 별도 격리 스택으로 추가됨 — 설계 근거는 `docs/web-design.md`)
 
 ## 4. 기술 스택 및 구현 방향
 
 - **언어**: Python 3.12
 - **인프라**: AWS SAM 서버리스 — Lambda 2개(WebhookFunction: 검증·즉답 / WorkerFunction: 수집·분석·발송), API Gateway HTTP API, DynamoDB(PAY_PER_REQUEST), Secrets Manager. 리전 ap-northeast-2.
-- **프론트**: 별도 없음. Telegram 봇(webhook 방식)이 유일한 인터페이스.
+- **프론트**: MVP는 Telegram 봇(webhook 방식)이 유일한 인터페이스. Phase 5에서 웹 진입점(Next.js 15 정적 PWA + Vercel, 별도 SAM 스택) 추가.
 - **스크래핑**: 공식 API 부재 → httpx로 비공식 JSON/GraphQL 엔드포인트 직접 호출 우선. 막히면 Playwright(Lambda 컨테이너) 전환.
 - **LLM**: Claude API (`anthropic` SDK), 호출 1회로 요약+메뉴 추천도 구조화 출력.
 - **개발 체제**: 1인 개발. Advisor(설계·검증)/Worker(구현) 역할 분담 — CLAUDE.md 참조.
@@ -51,7 +52,7 @@
 
 | 리스크 | 영향 | 대응 |
 |--------|------|------|
-| 네이버 비공식 엔드포인트 변경·차단 | 서비스 전면 중단 | 실측 덤프 기반 확정(Phase 1 게이트), 파서 분리로 교체 용이화, 개발자 에러 알림. (2026-07-05 데스크톱 UA 429 차단 사건 → 모바일 UA로 해소) |
+| 네이버 비공식 엔드포인트 변경·차단 | 서비스 전면 중단 | 실측 덤프 기반 확정(Phase 1 게이트), 파서 분리로 교체 용이화, 개발자 에러 알림. 429·UA 실측 상세는 `experiments/findings.md` |
 | Telegram webhook 3초 제한 vs 처리 10~20초 | 재시도 폭주 | 2-Lambda 분리, webhook 즉시 200 |
 | Claude 비용 | 소액이지만 누적 | 캐시 우선 응답, 호출당 리뷰 50개 상한, 킬 스위치 상수. **실측 ~$0.04/신규 분석, 캐시 히트 무료** (PRD §9) |
 | 스크래핑 요청 과다 | 차단 위험 | 개인용 소량 트래픽, RATE_LIMIT_DELAY, 캐시로 재수집 최소화 |
@@ -73,6 +74,8 @@
 - 메뉴 추천도가 실제 리뷰 내용과 부합 (개발자 육안 검증).
 - 이용자(본인·지인) 만족도. VOC 수집 후 추가 개발/유지보수 계획 수립.
 
-## 8. 현황 (2026-07-05)
+## 8. 현황 (2026-07-09)
 
-MVP **배포 완료·운영 중**. 실기기에서 신규 조회(소이빙수 요약 수신) 검증 완료, AWS Lambda IP에서 네이버 수집·Claude 분석·발송 정상 확인. 상세 진행 상태는 ROADMAP.md.
+- **Telegram 봇 MVP**: 배포 완료·운영 중 (2026-07-05, 실기기 E2E 검증).
+- **웹 진입점**: 별도 스택 `naver-review-web` + Vercel(`benny-naver-review.vercel.app`) 라이브 (2026-07-07, 초대코드제·관리자 사용량 통계 포함). 설계 근거는 `docs/web-design.md`.
+- Phase 0~5 전부 종료. 상세 진행 상태는 ROADMAP.md.

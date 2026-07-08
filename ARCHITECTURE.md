@@ -82,8 +82,11 @@ Telegram과 **완전히 격리된 별도 CloudFormation 스택**(제약: 기존 
 ├── src/requirements.txt  # Lambda 런타임 최소 의존성 (sam build가 이것만 설치)
 ├── web-frontend/         # 웹 진입점 프론트 (Next.js 15/shadcn PWA, Vercel 배포. 배포 제외 대상)
 ├── tests/                # pytest (외부 API mock, -m live 실측 옵트인). conftest는 src/를 sys.path에 추가
-├── experiments/          # 스크래핑 탐사 스크립트·덤프 (배포 제외)
+├── experiments/          # 스크래핑 탐사 스크립트·덤프 (배포 제외). findings.md = 스크래핑 실측 원천
 ├── docs/setup-guide.md   # 배포 절차 (§8 웹 배포 포함)
+├── docs/web-design.md    # 웹 진입점 설계 결정·근거
+├── .claude/agents/       # worker-dev(구현)·worker-scraper(탐사) 서브에이전트 정의
+├── .claude/skills/       # deploy-telegram·deploy-web·verify·delegate 워크플로우 스킬
 ├── ref/                  # 이전 구현 참조본 (읽기 전용)
 ├── template.yaml (Telegram) / template-web.yaml (웹) / samconfig.toml (Telegram 전용)
 └── CLAUDE.md / REQUIREMENTS.md / PRD.md / ROADMAP.md / ARCHITECTURE.md
