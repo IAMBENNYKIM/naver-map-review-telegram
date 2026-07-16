@@ -75,3 +75,61 @@ HTML Apollo state (근거: `dumps/step3_apollo.json`, `dumps/step4_fields.txt`):
 - 캐시 정책은 프로젝트 결정(만료 없음 + /update)을 따른다.
 
 실험 스크립트: `step1_redirect.py`(리다이렉트) / `step2_place_html.py`(HTML) / `step3_parse_apollo.py`(Apollo 추출 — 프로덕션 재사용 대상) / `step4_fields.py`(필드 덤프) / `step5_graphql.py`(GraphQL 검증) / `step6_pagination.py`(인트로스펙션 — **재실행 금지**).
+
+## 6. 장소 텍스트 검색 (키워드 → place_id 후보 리스트)
+
+- 탐사일: 2026-07-16 / 도구: Python + httpx 단독, 총 약 16회 요청, **429 0건**. 원본 덤프: `experiments/dumps/step7_*.json`.
+- 목적: 웹 진입점의 "자연어 프롬프트 → 장소 후보 리스트 → 클릭 시 리뷰 분석" 흐름. §1~5의 "place_id → 리뷰"와 반대 방향(텍스트 → place_id).
+- **판정: go — httpx 단독으로 텍스트 검색 → place_id 리스트 구현 가능.** 로그인·JS·captcha 없음, 전 구간 UTF-8.
+
+### 6-1. 확정 엔드포인트
+
+```
+GET https://map.naver.com/p/api/search/instant-search?query={검색어}&coords={lat,lng}
+```
+
+- **필수 파라미터**: `query` (검색어). `coords`("37.4979,127.0276" = lat,lng)는 선택 — 근접도(`dist`)·정렬 기준일 뿐 없어도 200. 지역명이 query에 포함되면 영향 작음.
+- **필수 헤더**: `Referer: https://map.naver.com/` — **없으면 403 Forbidden (nginx)** (근거: 실측, no-referer 요청이 403 text/html 548바이트 반환). §1~5의 pcmap-api GraphQL은 Referer 선택이었으나 **instant-search는 Referer 필수**로 정책이 다르다. `Accept-Language`도 유지.
+- **User-Agent**: 데스크톱/모바일 **둘 다 200 허용** (근거: 데스크톱 UA로 `돈멜` 조회 시 200 + place 6건 + first id 33099281). m.place.naver.com(§1 데스크톱 UA 429 차단)과 정책이 다르다. 단 프로젝트 일관성상 `config.NAVER_REQUEST_HEADERS`(모바일 UA) 재사용 권장.
+- 응답 최대 후보 수: place 섹션 6~10건 (autocomplete 성격 — 페이지네이션 없음). 후보 브라우징엔 충분.
+
+### 6-2. 응답 스키마 (근거: `dumps/step7_instant_donmel.json`, `dumps/step7_instant_gangnam_yangsik.json`)
+
+루트는 dict, 섹션 키: `meta, ac, bookingKeyword, place, address, bus, menu, menuForWeb, all`. 장소 후보는 `place[]` 배열.
+
+| 항목 | JSON 경로 | 실측 비고 |
+|---|---|---|
+| place_id | `place[].id` (== `.sid`) | 문자열 숫자 "33099281". 프로덕션 조회 place_id와 동일 체계 |
+| 장소명 | `place[].title` | 하이라이트 마크업 없이 순수 텍스트 (`<b>` 등 없음 — 실측) |
+| 카테고리 | `place[].ctg` | "돼지고기구이", "양식", "스페인음식" 등 |
+| 도로명 주소 | `place[].roadAddress` | 전체 도로명 |
+| 지번 주소 | `place[].jibunAddress` | 전체 지번 |
+| 축약 주소 | `place[].shortAddress[]` | 배열, 1건 |
+| 리뷰 수 | `place[].review.count` | 문자열 "1258" (방문자+블로그 합산 추정, §2 `.total`과 정확히 일치하진 않음) |
+| 좌표 | `place[].x`(경도), `place[].y`(위도) | 문자열 |
+| 기타 | `.cid`(카테고리 코드), `.totalScore`(랭킹 점수), `.dist`(coords 거리), `.hasBooking`, `.type`("place") | — |
+
+- **평점·대표 이미지 URL 없음** — instant-search 응답에 별점/썸네일 필드 부재(선택 요구사항이라 미충족 무방). 필요 시 각 place_id로 §1 단계 B(HTML Apollo `visitorReviewsScore`) 재사용 또는 대표 이미지는 별도 조회 필요.
+
+### 6-3. 자연어 질의 소화 수준 (LLM 정규화 필요성 근거 데이터)
+
+| 키워드 | 결과 | 상위 3건 |
+|---|---|---|
+| `강남 양식` (지역+업종) | **10건** | 치스타리에 강남역점 / 을지다락 강남역 / 트라가 강남역점 |
+| `돈멜` (상호 직접) | **6건**, **place_id 33099281 포함 확인(교차검증 통과)** | 돈멜 본점(33099281) / 돈멜 서현 직영점 / 돈멜 미금 직영점 |
+| `강남 데이트 양식집` (자연어) | **0건** (place=[], all=[], len=194) | — |
+
+- **핵심**: instant-search는 autocomplete 성격이라 "지역+업종" 또는 "상호명"은 잘 소화하나, **"데이트" 같은 상황어가 섞인 자연어 다중개념 질의는 빈 결과**. → **LLM으로 자연어를 "지역+업종/상호" 형태로 정규화하는 전처리가 필수**. (`강남 데이트 양식집` → `강남 양식` 수준으로 축약해야 결과가 나옴.)
+
+### 6-4. 실패한 시도 (반복 금지)
+
+1. **allSearch 엔드포인트 `GET https://map.naver.com/p/api/search/allSearch?query=...&type=all`** — 정상 질의(`강남 양식`)에도 `result.place: null` + `result.metaInfo.pageId: "ncaptcha-all-search-no-result"` + `ncaptcha`(`confirmRules: "CE_EMPTY_TOKEN"`) 반환. 별도 captcha/토큰을 요구해 **httpx 단독 불가**. captcha 유발 방지 위해 더 밀지 않음 (근거: `dumps/step7_allsearch_gangnam.json`, `dumps/step7_allsearch_nl.json`). → **instant-search로 충분하므로 allSearch 불필요.**
+2. **Referer 생략** → 403 Forbidden. instant-search엔 Referer 필수.
+3. 자연어 다중개념 질의 → 빈 결과 (위 6-3). 엔드포인트 문제 아님, 질의 형태 문제 → LLM 정규화로 해결.
+
+### 6-5. rate limit 실측
+
+- Referer 포함 0.5초 간격 **4연속 호출 전부 200** (429 0건). instant-search도 §4의 pcmap-api와 동일하게 0.5초 간격이면 안전.
+- 미탐사(불필요): allSearch 토큰 획득 경로, 후보 6~10건 초과 페이지네이션, 평점/이미지 보강 엔드포인트.
+
+실험 스크립트: `step7_place_search.py`(확정 산출물 — 3종 키워드 후보 리스트 출력 + 돈멜 교차검증) / `step7_probe.py`(엔드포인트·헤더 대조 탐사 도구).
