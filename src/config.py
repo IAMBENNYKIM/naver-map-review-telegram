@@ -34,6 +34,13 @@ ANTHROPIC_MODEL: str = "claude-sonnet-4-5"   # 분석 생성 모델 (변경 시 
 LLM_COMMENTARY_ENABLED: bool = os.getenv("LLM_COMMENTARY_ENABLED", "true").lower() == "true"
 LLM_MAX_OUTPUT_TOKENS: int = 2000            # 분석 응답 max_tokens
 
+# 검색어 정규화(search_normalizer) — 자연어 프롬프트를 네이버 검색어로 변환하는 저비용 LLM.
+# 분석용(ANTHROPIC_MODEL)과 별개의 경량 모델·짧은 max_tokens를 쓴다(비용·지연 최소화).
+SEARCH_LLM_MODEL: str = "claude-haiku-4-5"   # 검색어 정규화용 저비용 모델
+SEARCH_LLM_MAX_TOKENS: int = 100             # 정규화 응답 max_tokens (한 줄 검색어면 충분)
+# 검색어 정규화 킬 스위치 — 기본 true. off여도 원문 프롬프트로 검색이 동작한다(개선 수단).
+SEARCH_LLM_ENABLED: bool = os.getenv("SEARCH_LLM_ENABLED", "true").lower() == "true"
+
 # ---------------------------------------------------------------------------
 # 네이버 지도 리뷰 수집기 (naver_review_collector)
 # ---------------------------------------------------------------------------

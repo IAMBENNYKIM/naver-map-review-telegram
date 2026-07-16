@@ -324,3 +324,107 @@ class TestFetchReviews:
 
         with pytest.raises(naver_review_collector.ReviewCollectError):
             naver_review_collector.fetch_reviews(PLACE_ID, "restaurant", 50)
+
+
+# ---------------------------------------------------------------------------
+# search_places (findings.md §6 instant-search)
+# ---------------------------------------------------------------------------
+
+# §6-2 실측 스키마 모사 — 루트 dict의 place[] 배열
+_INSTANT_SEARCH_RESPONSE = {
+    "meta": {},
+    "place": [
+        {
+            "id": "33099281",
+            "sid": "33099281",
+            "title": "돈멜 본점",
+            "ctg": "돼지고기구이",
+            "roadAddress": "경기 성남시 분당구 느티로63번길 6",
+            "jibunAddress": "경기 성남시 분당구 정자동 66-16",
+            "review": {"count": "1258"},
+            "x": "127.1",
+            "y": "37.4",
+        },
+        {
+            "id": "12345678",
+            "title": "돈멜 서현 직영점",
+            "ctg": "돼지고기구이",
+            "roadAddress": "경기 성남시 분당구 서현로",
+            "review": {"count": "640"},
+        },
+    ],
+}
+
+
+class TestSearchPlaces:
+    def _handler(self, response_json):
+        def handler(request: httpx.Request) -> httpx.Response:
+            # instant-search 엔드포인트로만 요청되는지 확인 + Referer 헤더 존재 확인
+            assert "map.naver.com/p/api/search/instant-search" in str(request.url)
+            assert request.headers.get("Referer") == "https://map.naver.com/"
+            return httpx.Response(
+                200, json=response_json, headers={"Content-Type": "application/json"}
+            )
+
+        return handler
+
+    def test_place_배열을_계약_dict로_매핑한다(self, install_transport):
+        install_transport(self._handler(_INSTANT_SEARCH_RESPONSE))
+
+        place_list = naver_review_collector.search_places("강남 양식")
+
+        assert len(place_list) == 2
+        first = place_list[0]
+        assert first == {
+            "place_id": "33099281",
+            "name": "돈멜 본점",
+            "category": "돼지고기구이",
+            "road_address": "경기 성남시 분당구 느티로63번길 6",
+            "review_count": 1258,  # 문자열 "1258" → int
+        }
+
+    def test_place_키_부재면_빈_리스트다(self, install_transport):
+        install_transport(self._handler({"meta": {}, "address": []}))
+
+        assert naver_review_collector.search_places("없는곳") == []
+
+    def test_place_null이면_빈_리스트다(self, install_transport):
+        install_transport(self._handler({"place": None}))
+
+        assert naver_review_collector.search_places("없는곳") == []
+
+    def test_review_count가_비숫자면_None이다(self, install_transport):
+        response = {
+            "place": [
+                {"id": "1", "title": "가게", "ctg": "카페", "roadAddress": "주소",
+                 "review": {"count": "리뷰없음"}},
+                {"id": "2", "title": "가게2", "ctg": "카페", "roadAddress": "주소2"},
+            ]
+        }
+        install_transport(self._handler(response))
+
+        place_list = naver_review_collector.search_places("카페")
+
+        assert place_list[0]["review_count"] is None  # 비숫자 → None
+        assert place_list[1]["review_count"] is None  # review 부재 → None
+
+    def test_limit으로_절단한다(self, install_transport):
+        install_transport(self._handler(_INSTANT_SEARCH_RESPONSE))
+
+        place_list = naver_review_collector.search_places("강남 양식", limit=1)
+
+        assert len(place_list) == 1
+
+    def test_429면_즉시_ReviewCollectError(self, install_transport):
+        call_counter = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_counter["count"] += 1
+            return httpx.Response(429, text="rate limited")
+
+        install_transport(handler)
+
+        with pytest.raises(naver_review_collector.ReviewCollectError, match="429"):
+            naver_review_collector.search_places("강남 양식")
+
+        assert call_counter["count"] == 1  # 재시도 금지

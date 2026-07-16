@@ -16,6 +16,7 @@ import json
 import logging
 import re
 import time
+from urllib.parse import quote
 
 import httpx
 
@@ -31,6 +32,11 @@ _MOBILE_PLACE_URL_TEMPLATE = "https://m.place.naver.com/place/{place_id}/review/
 
 # GraphQL 리뷰 엔드포인트 (findings.md §1 단계 C)
 _GRAPHQL_ENDPOINT = "https://pcmap-api.place.naver.com/graphql"
+
+# 장소 텍스트 검색(instant-search) 엔드포인트 (findings.md §6-1 실측 확정)
+# query 파라미터만 사용한다(coords 미사용 — 지역명이 query에 포함되는 전제).
+# Referer 필수(없으면 403) — config.NAVER_REQUEST_HEADERS가 이미 포함한다.
+_INSTANT_SEARCH_ENDPOINT = "https://map.naver.com/p/api/search/instant-search"
 
 # 실측 검증된 쿼리 원문 (실서비스 파라미터 원형 — 임의 확장 금지)
 _VISITOR_REVIEWS_QUERY = (
@@ -198,6 +204,67 @@ def fetch_reviews(
 
     logger.info("리뷰 수집 완료 (place_id=%s, 수집=%d건)", place_id, len(review_list))
     return review_list[:limit]
+
+
+def search_places(keyword: str, limit: int = 10) -> list[dict]:
+    """검색어로 네이버 지도 장소 후보 리스트를 조회한다 (findings.md §6 실측 확정).
+
+    instant-search 엔드포인트에 query 파라미터만 보낸다(coords 미사용 — 지역명이
+    keyword에 포함되는 전제). 응답 루트 dict의 ``place[]`` 배열에서 후보를 추출한다.
+    ``place`` 키 부재·null이면 빈 리스트를 반환하며, limit 개수로 절단한다.
+
+    Returns:
+        후보 dict 리스트 (웹 /search API 계약):
+          - place_id (str): 장소 ID (``place[].id``)
+          - name (str): 장소명 (``place[].title``)
+          - category (str): 카테고리 (``place[].ctg``)
+          - road_address (str): 도로명 주소 (``place[].roadAddress``)
+          - review_count (int | None): 리뷰 수 (``place[].review.count`` int 변환, 실패 시 None)
+
+    Raises:
+        ReviewCollectError: 네트워크 오류·429·4xx/5xx 응답 시 (기존 규약 준수).
+    """
+    response = _http_get(
+        f"{_INSTANT_SEARCH_ENDPOINT}?query={quote(keyword)}",
+        context="장소 검색",
+    )
+    _raise_for_http_status(response, context="장소 검색")
+
+    try:
+        payload = response.json()
+    except json.JSONDecodeError as error:
+        raise ReviewCollectError(
+            f"장소 검색 응답 JSON 파싱 실패 (구조 변경 가능성): {error}"
+        ) from error
+
+    raw_places = payload.get("place") if isinstance(payload, dict) else None
+    if not raw_places:
+        logger.info("장소 검색 결과 없음 (결과=0건)")
+        return []
+
+    place_list: list[dict] = []
+    for place in raw_places[:limit]:
+        if not isinstance(place, dict):
+            continue
+        review = place.get("review")
+        review_count = None
+        if isinstance(review, dict):
+            try:
+                review_count = int(review.get("count"))
+            except (TypeError, ValueError):
+                review_count = None  # 비숫자·부재 시 None
+        place_list.append(
+            {
+                "place_id": place.get("id", ""),
+                "name": place.get("title", ""),
+                "category": place.get("ctg", ""),
+                "road_address": place.get("roadAddress", ""),
+                "review_count": review_count,
+            }
+        )
+
+    logger.info("장소 검색 완료 (결과=%d건)", len(place_list))
+    return place_list
 
 
 # ---------------------------------------------------------------------------
