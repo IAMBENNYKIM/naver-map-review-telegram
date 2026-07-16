@@ -7,7 +7,10 @@
 
 import type {
   AnalysisResult,
+  AnalysisTarget,
   DailyUsage,
+  PlaceCandidate,
+  PlaceSearchResult,
   ReviewSummary,
   SummaryMenu,
   UsageRow,
@@ -115,19 +118,78 @@ export async function requestInvite(code: string): Promise<string> {
   return data.token;
 }
 
-/** `POST /analyze` — 분석을 요청하고 job_id 를 받는다. */
+/**
+ * `POST /analyze` — 분석을 요청하고 job_id 를 받는다.
+ * 대상은 네이버 URL 또는 place_id 중 하나이며, 백엔드에는 둘 중 하나만 보낸다.
+ */
 export async function requestAnalyze(
   token: string,
-  naverUrl: string,
+  target: AnalysisTarget,
   forceRefresh = false,
 ): Promise<string> {
+  const body =
+    "naverUrl" in target
+      ? { naver_url: target.naverUrl, force_refresh: forceRefresh }
+      : { place_id: target.placeId, force_refresh: forceRefresh };
   const data = await request<{ job_id: string }>({
     method: "POST",
     path: "/analyze",
     token,
-    body: { naver_url: naverUrl, force_refresh: forceRefresh },
+    body,
   });
   return data.job_id;
+}
+
+/** `POST /search` 원본 응답(snake_case). */
+interface RawPlaceSearchResponse {
+  keyword?: string;
+  places?: unknown;
+}
+
+/**
+ * 후보 장소 한 건을 방어적으로 매핑한다.
+ * place_id·name 이 온전치 않으면 null 을 반환해 호출부가 걸러내게 한다.
+ */
+function toPlaceCandidate(value: unknown): PlaceCandidate | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const placeId = typeof record.place_id === "string" ? record.place_id : "";
+  const name = typeof record.name === "string" ? record.name : "";
+  if (!placeId || !name) {
+    return null;
+  }
+  const category = typeof record.category === "string" ? record.category : "";
+  const roadAddress =
+    typeof record.road_address === "string" ? record.road_address : "";
+  const reviewCount =
+    typeof record.review_count === "number" &&
+    Number.isFinite(record.review_count)
+      ? record.review_count
+      : null;
+  return { placeId, name, category, roadAddress, reviewCount };
+}
+
+/** `POST /search` — 자연어 프롬프트로 후보 장소를 검색한다. */
+export async function searchPlaces(
+  token: string,
+  prompt: string,
+): Promise<PlaceSearchResult> {
+  const raw = await request<RawPlaceSearchResponse>({
+    method: "POST",
+    path: "/search",
+    token,
+    body: { prompt },
+  });
+
+  const keyword = typeof raw.keyword === "string" ? raw.keyword : "";
+  const places = Array.isArray(raw.places)
+    ? raw.places
+        .map(toPlaceCandidate)
+        .filter((candidate): candidate is PlaceCandidate => candidate !== null)
+    : [];
+  return { keyword, places };
 }
 
 /** 백엔드가 내려주는 `GET /result` 원본 응답(snake_case). */
@@ -265,6 +327,7 @@ function toDailyUsage(value: unknown): DailyUsage[] {
       date,
       total: toFiniteNumber(record.total),
       llm: toFiniteNumber(record.llm),
+      search: toFiniteNumber(record.search),
     });
   }
   return result;
@@ -277,6 +340,7 @@ export async function fetchAdminStats(adminToken: string): Promise<UsageRow[]> {
       identity: string;
       total_count: number;
       llm_call_count: number;
+      search_count?: number;
       last_used_at: string;
       daily?: unknown;
     }>;
@@ -290,6 +354,7 @@ export async function fetchAdminStats(adminToken: string): Promise<UsageRow[]> {
     identity: row.identity,
     totalCount: toFiniteNumber(row.total_count),
     llmCallCount: toFiniteNumber(row.llm_call_count),
+    searchCount: toFiniteNumber(row.search_count),
     lastUsedAt: row.last_used_at,
     daily: toDailyUsage(row.daily),
   }));

@@ -13,6 +13,7 @@ import type { DailyUsage, UsageRow } from "./types";
 export interface RangeSum {
   total: number;
   llm: number;
+  search: number;
 }
 
 /** 차트 지표 종류. */
@@ -55,7 +56,7 @@ export function filterDailyByRange(
 /** daily 배열의 total·llm 을 각각 합산한다. */
 export function sumRange(daily: DailyUsage[]): RangeSum {
   if (!Array.isArray(daily)) {
-    return { total: 0, llm: 0 };
+    return { total: 0, llm: 0, search: 0 };
   }
   return daily.reduce<RangeSum>(
     (accumulator, entry) => {
@@ -64,9 +65,14 @@ export function sumRange(daily: DailyUsage[]): RangeSum {
       }
       const total = Number.isFinite(entry.total) ? entry.total : 0;
       const llm = Number.isFinite(entry.llm) ? entry.llm : 0;
-      return { total: accumulator.total + total, llm: accumulator.llm + llm };
+      const search = Number.isFinite(entry.search) ? entry.search : 0;
+      return {
+        total: accumulator.total + total,
+        llm: accumulator.llm + llm,
+        search: accumulator.search + search,
+      };
     },
-    { total: 0, llm: 0 },
+    { total: 0, llm: 0, search: 0 },
   );
 }
 

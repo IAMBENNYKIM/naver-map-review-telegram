@@ -31,6 +31,7 @@ interface DisplayRow {
   identity: string;
   total: number;
   llm: number;
+  search: number;
   lastUsedAt: string;
 }
 
@@ -112,6 +113,7 @@ export default function AdminPage() {
           identity: row.identity,
           total: row.totalCount,
           llm: row.llmCallCount,
+          search: row.searchCount,
           lastUsedAt: row.lastUsedAt,
         };
       }
@@ -122,6 +124,7 @@ export default function AdminPage() {
         identity: row.identity,
         total: ranged.total,
         llm: ranged.llm,
+        search: ranged.search,
         lastUsedAt: row.lastUsedAt,
       };
     });
@@ -300,6 +303,9 @@ export default function AdminPage() {
                             LLM 호출
                           </th>
                         ) : null}
+                        <th className="px-4 py-3 text-right font-medium">
+                          검색
+                        </th>
                         <th className="px-4 py-3 font-medium">최근 사용</th>
                       </tr>
                     </thead>
@@ -322,6 +328,9 @@ export default function AdminPage() {
                               {row.llm}
                             </td>
                           ) : null}
+                          <td className="px-4 py-3 text-right tabular-nums">
+                            {row.search}
+                          </td>
                           <td className="px-4 py-3 text-muted">
                             {row.lastUsedAt}
                           </td>

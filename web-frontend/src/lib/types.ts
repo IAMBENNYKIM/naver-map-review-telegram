@@ -25,6 +25,30 @@ export interface ReviewSummary {
   caution: string | null;
 }
 
+/**
+ * 분석 대상. 네이버 지도 URL 또는 검색으로 고른 place_id 중 하나로 지정한다.
+ * (백엔드 `POST /analyze` 는 둘 중 하나만 받는다.)
+ */
+export type AnalysisTarget = { naverUrl: string } | { placeId: string };
+
+/** `POST /search` 응답의 후보 장소 한 곳 (snake_case → camelCase 매핑 후). */
+export interface PlaceCandidate {
+  placeId: string;
+  name: string;
+  category: string;
+  roadAddress: string;
+  /** 리뷰 수. 백엔드가 모르면 null. */
+  reviewCount: number | null;
+}
+
+/** `POST /search` 응답을 camelCase로 매핑한 검색 결과. */
+export interface PlaceSearchResult {
+  /** LLM이 정규화한 검색어. 없으면 빈 문자열. */
+  keyword: string;
+  /** 후보 장소 목록. 결과가 없으면 빈 배열. */
+  places: PlaceCandidate[];
+}
+
 /** 분석 진행 상태. */
 export type AnalysisStatus = "processing" | "done" | "error";
 
@@ -55,6 +79,8 @@ export interface DailyUsage {
   total: number;
   /** 그 날의 LLM 호출 수. */
   llm: number;
+  /** 그 날의 장소 검색 수. */
+  search: number;
 }
 
 /** `GET /admin/stats` 응답의 사용량 한 행. */
@@ -62,6 +88,8 @@ export interface UsageRow {
   identity: string;
   totalCount: number;
   llmCallCount: number;
+  /** 누적 장소 검색 수. */
+  searchCount: number;
   lastUsedAt: string;
   /** 일자별 사용량 (날짜 오름차순). 과거 데이터는 비어 있을 수 있다. */
   daily: DailyUsage[];
