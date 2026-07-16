@@ -173,6 +173,40 @@ class TestFreshAnalysis:
         assert complete_kwargs["summary_json"] == SUMMARY_JSON
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=False)
 
+    def test_place_id_수신시_resolve_place를_생략한다(self, monkeypatch):
+        mocks = _patch_common(monkeypatch)
+        _patch_pipeline(monkeypatch)
+        # resolve_place가 호출되면 실패하도록 MagicMock으로 교체한다.
+        resolve_place_mock = MagicMock(
+            side_effect=AssertionError("place_id 경로에서 호출되면 안 됨")
+        )
+        monkeypatch.setattr(
+            naver_review_collector, "resolve_place", resolve_place_mock
+        )
+
+        event = dict(_event(), place_id="9998887776", naver_url="")
+        web_worker_handler.lambda_handler(event, None)
+
+        resolve_place_mock.assert_not_called()
+        # 전달된 place_id로 수집·저장이 진행된다.
+        mocks["save_web_summary"].assert_called_once()
+        assert mocks["save_web_summary"].call_args.args[0] == "9998887776"
+        mocks["complete_job"].assert_called_once()
+
+    def test_naver_url_경로는_resolve_place를_호출한다(self, monkeypatch):
+        # place_id 없는 기존 경로 회귀 — resolve_place가 호출돼 place_id를 얻는다.
+        mocks = _patch_common(monkeypatch)
+        _patch_pipeline(monkeypatch)
+        resolve_place_mock = MagicMock(return_value={"place_id": PLACE_ID})
+        monkeypatch.setattr(
+            naver_review_collector, "resolve_place", resolve_place_mock
+        )
+
+        web_worker_handler.lambda_handler(_event(), None)
+
+        resolve_place_mock.assert_called_once_with(NAVER_URL)
+        assert mocks["save_web_summary"].call_args.args[0] == PLACE_ID
+
     def test_분석_결과가_None이면_잡을_실패_처리한다(self, monkeypatch):
         mocks = _patch_common(monkeypatch)
         _patch_pipeline(monkeypatch, summary_json=None)

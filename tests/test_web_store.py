@@ -268,6 +268,34 @@ class TestUsage:
         assert usage[f"req#{today}"] == 2
         assert usage[f"llm#{today}"] == 1
 
+    def test_검색_사용량은_search_count와_일별_카운터를_누적한다(self, web_tables):
+        from datetime import datetime, timezone, timedelta
+
+        today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+        web_store.log_search_usage("친구A")
+        web_store.log_search_usage("친구A")
+
+        usage = web_tables["usage"].get_item(Key={"identity": "친구A"})["Item"]
+        assert usage["search_count"] == 2
+        assert usage[f"search#{today}"] == 2
+        assert "+09:00" in usage["last_used_at"]
+
+    def test_검색_사용량은_분석_카운터와_독립적이다(self, web_tables):
+        # log_usage(분석)와 log_search_usage(검색)가 서로 다른 속성을 쓴다.
+        web_store.log_usage("친구A", cache_hit=False)  # total_count/llm_call_count
+        web_store.log_search_usage("친구A")            # search_count
+
+        usage = web_tables["usage"].get_item(Key={"identity": "친구A"})["Item"]
+        assert usage["total_count"] == 1
+        assert usage["llm_call_count"] == 1
+        assert usage["search_count"] == 1
+
+    def test_검색_기록_실패는_예외를_전파하지_않는다(self):
+        with patch.object(
+            web_store, "_usage_table", side_effect=RuntimeError("연결 실패")
+        ):
+            web_store.log_search_usage("친구A")
+
     def test_기록_실패는_예외를_전파하지_않는다(self):
         with patch.object(
             web_store, "_usage_table", side_effect=RuntimeError("연결 실패")
@@ -298,10 +326,12 @@ class TestSummarizeUsageItem:
             "identity": "벤",
             "total_count": Decimal(3),
             "llm_call_count": Decimal(1),
+            "search_count": Decimal(4),
             "last_used_at": "2026-07-07T12:00:00+09:00",
             "req#2026-07-05": Decimal(1),
             "llm#2026-07-05": Decimal(1),
             "req#2026-07-07": Decimal(2),
+            "search#2026-07-07": Decimal(4),
         }
 
         summary = web_store.summarize_usage_item(item)
@@ -309,11 +339,12 @@ class TestSummarizeUsageItem:
         assert summary["identity"] == "벤"
         assert summary["total_count"] == Decimal(3)
         assert summary["llm_call_count"] == Decimal(1)
+        assert summary["search_count"] == Decimal(4)
         assert summary["last_used_at"] == "2026-07-07T12:00:00+09:00"
-        # 오름차순 정렬 + 없는 지표(2026-07-07의 llm)는 0으로 채움
+        # 오름차순 정렬 + 없는 지표(2026-07-07의 llm, 2026-07-05의 search)는 0으로 채움
         assert summary["daily"] == [
-            {"date": "2026-07-05", "total": Decimal(1), "llm": Decimal(1)},
-            {"date": "2026-07-07", "total": Decimal(2), "llm": 0},
+            {"date": "2026-07-05", "total": Decimal(1), "llm": Decimal(1), "search": 0},
+            {"date": "2026-07-07", "total": Decimal(2), "llm": 0, "search": Decimal(4)},
         ]
 
     def test_일별_키가_없으면_daily는_빈_리스트다(self):

@@ -4,7 +4,10 @@ WebApiFunction이 비동기 invoke한 잡을 받아 무거운 파이프라인을
   place 해석 → 캐시 조회(web → prod read-through) → (미스 시) 수집 → 분석 →
   잡 완료 기록 → 사용량 기록
 
-이벤트 계약: {"job_id": str, "identity": str, "naver_url": str}
+이벤트 계약: {"job_id": str, "identity": str, "naver_url": str, "place_id": str,
+             "force_refresh": bool}
+  - place_id가 truthy면 그 값을 직접 사용(검색 후보 클릭 경로 — resolve_place 생략).
+  - 아니면 naver_url을 resolve_place로 해석한다(공유 URL 입력 경로).
 
 필수 패턴: `async def lambda_handler` 금지 → 동기 래퍼에서 asyncio.run 호출.
 전체를 예외 흡수로 감싼다(비동기 재시도 폭주 방지) — 어떤 예외도 잡을 error 상태로
@@ -39,6 +42,7 @@ async def _async_main(event, context) -> dict:
     job_id = event.get("job_id")
     identity = event.get("identity", "")
     naver_url = event.get("naver_url")
+    place_id = event.get("place_id") or ""
     force_refresh = bool(event.get("force_refresh", False))
 
     if not job_id:
@@ -46,7 +50,13 @@ async def _async_main(event, context) -> dict:
         return {"statusCode": 200, "body": "invalid event ignored"}
 
     try:
-        _run_pipeline(job_id, identity, naver_url or "", force_refresh=force_refresh)
+        _run_pipeline(
+            job_id,
+            identity,
+            naver_url or "",
+            place_id,
+            force_refresh=force_refresh,
+        )
     except naver_review_collector.ReviewCollectError as error:
         logger.warning("리뷰 수집 실패 (job_id=%s): %s", job_id, error)
         web_store.fail_job(job_id, _COLLECT_FAILURE_MESSAGE)
@@ -58,16 +68,23 @@ async def _async_main(event, context) -> dict:
 
 
 def _run_pipeline(
-    job_id: str, identity: str, naver_url: str, force_refresh: bool = False
+    job_id: str,
+    identity: str,
+    naver_url: str,
+    place_id: str = "",
+    force_refresh: bool = False,
 ) -> None:
     """수집→분석→잡 완료 파이프라인 본체.
 
+    place_id가 truthy면 그 값을 직접 사용하고(검색 후보 클릭 경로), 아니면 naver_url을
+    resolve_place로 해석한다(공유 URL 입력 경로). 나머지 캐시·수집·분석 흐름은 동일하다.
     캐시 조회 순서: web 캐시 → prod 캐시(read-through, 히트 시 web 캐시로 워밍).
     force_refresh가 True면 캐시 조회를 건너뛰고 곧바로 신규 수집·분석 경로를 탄다
     (Telegram의 /update와 동일 의미).
     """
-    # 1) place 해석
-    place_id = naver_review_collector.resolve_place(naver_url)["place_id"]
+    # 1) place 해석 — place_id가 주어지면 resolve_place 생략, 아니면 URL을 해석한다.
+    if not place_id:
+        place_id = naver_review_collector.resolve_place(naver_url)["place_id"]
 
     # 2) 캐시 조회 — web 우선, 없으면 prod 캐시를 읽어 web 캐시에 워밍한다.
     #    force_refresh면 캐시를 무시하고 신규 분석 경로로 직행한다.

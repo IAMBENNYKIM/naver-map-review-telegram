@@ -9,6 +9,7 @@ asyncio 래퍼를 두지 않는다(webhook_handler와 달리 파이프라인 호
 
 라우트:
   - POST /invite          초대코드 검증 → 세션 토큰 발급
+  - POST /search          세션 검증 → 검색어 정규화 + 장소 검색 → 후보 리스트 (동기)
   - POST /analyze         세션 검증 → 잡 생성 + WebWorkerFunction 비동기 invoke → 202
   - GET  /result/{job_id} 세션 검증 + 소유권 확인 → 잡 상태 반환
   - GET  /admin/stats     관리자 토큰 검증 → 사용량 통계
@@ -20,16 +21,22 @@ asyncio 래퍼를 두지 않는다(webhook_handler와 달리 파이프라인 호
 import json
 import logging
 import os
+import re
 import uuid
 from decimal import Decimal
 
 import config
+import naver_review_collector
+import search_normalizer
 import web_auth
 import web_store
 
 logger = logging.getLogger(__name__)
 
 _JSON_HEADERS = {"content-type": "application/json"}
+
+# place_id 형식 검증 — 숫자만 허용 (네이버 place_id 체계)
+_PLACE_ID_PATTERN = re.compile(r"^\d+$")
 
 
 def lambda_handler(event, context):
@@ -54,6 +61,8 @@ def _route(method: str, path: str, event: dict) -> dict:
     """메서드·경로에 따라 개별 핸들러로 분기한다. 미지원이면 404."""
     if method == "POST" and path == "/invite":
         return _handle_invite(event)
+    if method == "POST" and path == "/search":
+        return _handle_search(event)
     if method == "POST" and path == "/analyze":
         return _handle_analyze(event)
     if method == "GET" and path == "/admin/stats":
@@ -82,8 +91,15 @@ def _handle_invite(event: dict) -> dict:
     return _response(200, {"token": token})
 
 
-def _handle_analyze(event: dict) -> dict:
-    """POST /analyze — 세션 검증 후 잡 생성 + WebWorkerFunction 비동기 invoke."""
+def _handle_search(event: dict) -> dict:
+    """POST /search — 세션 검증 후 검색어 정규화 + 장소 검색을 동기 처리한다.
+
+    처리 순서: 세션 검증 → normalize_search_query → search_places →
+    log_search_usage → 응답. 네이버 검색 실패는 502로, 그 외는 최상위(500)에서 흡수.
+
+    PII 주의: prompt 원문·keyword를 INFO 로그에 남기지 않는다(사용자 입력 텍스트).
+    건수·identity만 로깅한다.
+    """
     identity = _authenticate_session(event)
     if not identity:
         return _response(401, {"error": "unauthorized"})
@@ -92,16 +108,60 @@ def _handle_analyze(event: dict) -> dict:
     if body is None:
         return _response(400, {"error": "invalid json body"})
 
+    prompt = body.get("prompt")
+    if not prompt or not str(prompt).strip():
+        return _response(400, {"error": "prompt is required"})
+
+    keyword = search_normalizer.normalize_search_query(str(prompt))
+    try:
+        place_list = naver_review_collector.search_places(keyword)
+    except naver_review_collector.ReviewCollectError as error:
+        # keyword를 로그에 남기지 않는다(사용자 입력 파생 텍스트).
+        logger.warning("장소 검색 실패 (identity=%s): %s", identity, error)
+        return _response(502, {"error": "place search failed"})
+
+    web_store.log_search_usage(identity)
+    logger.info(
+        "검색 완료 (identity=%s, 결과=%d건)", identity, len(place_list)
+    )
+    return _response(200, {"keyword": keyword, "places": place_list})
+
+
+def _handle_analyze(event: dict) -> dict:
+    """POST /analyze — 세션 검증 후 잡 생성 + WebWorkerFunction 비동기 invoke.
+
+    입력: body에 ``naver_url`` 또는 ``place_id`` 중 하나 필수(둘 다 있으면 place_id 우선).
+    place_id는 정규식 ``^\\d+$`` 로 검증한다(불일치 시 400).
+    """
+    identity = _authenticate_session(event)
+    if not identity:
+        return _response(401, {"error": "unauthorized"})
+
+    body = _parse_json_body(event)
+    if body is None:
+        return _response(400, {"error": "invalid json body"})
+
+    place_id = body.get("place_id")
     naver_url = body.get("naver_url")
-    if not naver_url:
-        return _response(400, {"error": "naver_url is required"})
+
+    # place_id 우선. 형식 불일치는 400. 둘 다 없으면 400.
+    if place_id:
+        if not _PLACE_ID_PATTERN.match(str(place_id)):
+            return _response(400, {"error": "invalid place_id"})
+        place_id = str(place_id)
+        naver_url = ""
+    elif naver_url:
+        naver_url = str(naver_url)
+        place_id = ""
+    else:
+        return _response(400, {"error": "naver_url or place_id is required"})
 
     # force_refresh: 캐시를 무시하고 강제 재분석(Telegram /update와 동일 의미)
     force_refresh = bool(body.get("force_refresh", False))
 
     job_id = uuid.uuid4().hex
-    web_store.create_job(job_id, identity, naver_url)
-    _invoke_web_worker(job_id, identity, naver_url, force_refresh)
+    web_store.create_job(job_id, identity, naver_url, place_id)
+    _invoke_web_worker(job_id, identity, naver_url, place_id, force_refresh)
     logger.info("분석 잡 생성·invoke 완료 (job_id=%s, identity=%s)", job_id, identity)
     return _response(202, {"job_id": job_id})
 
@@ -155,11 +215,16 @@ def _handle_admin_stats(event: dict) -> dict:
 # 비동기 invoke
 # ---------------------------------------------------------------------------
 def _invoke_web_worker(
-    job_id: str, identity: str, naver_url: str, force_refresh: bool
+    job_id: str,
+    identity: str,
+    naver_url: str,
+    place_id: str,
+    force_refresh: bool,
 ) -> None:
     """WebWorkerFunction을 InvocationType="Event"로 비동기 invoke한다.
 
-    이벤트 계약: {"job_id", "identity", "naver_url", "force_refresh"}.
+    이벤트 계약: {"job_id", "identity", "naver_url", "place_id", "force_refresh"}.
+    naver_url·place_id는 둘 중 쓰지 않는 쪽이 빈 문자열이다.
     (webhook_handler._invoke_worker 패턴 참고.)
     """
     import boto3
@@ -168,6 +233,7 @@ def _invoke_web_worker(
         "job_id": job_id,
         "identity": identity,
         "naver_url": naver_url,
+        "place_id": place_id,
         "force_refresh": force_refresh,
     }
     lambda_client = boto3.client("lambda", region_name=config.AWS_REGION)

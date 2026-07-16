@@ -4,6 +4,7 @@ import json
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import naver_review_collector
 import web_api_handler
 import web_auth
 
@@ -68,6 +69,98 @@ class TestInvite:
         result = web_api_handler.lambda_handler(event, None)
 
         assert result["statusCode"] == 400
+
+
+class TestSearch:
+    def test_토큰이_없으면_401을_반환한다(self):
+        event = build_event("POST", "/search", body={"prompt": "강남 양식"})
+
+        result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 401
+
+    def test_prompt이_없으면_400을_반환한다(self):
+        event = build_event(
+            "POST", "/search", body={}, headers=bearer(session_token())
+        )
+
+        result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"])["error"] == "prompt is required"
+
+    def test_prompt이_공백뿐이면_400을_반환한다(self):
+        event = build_event(
+            "POST", "/search", body={"prompt": "   "}, headers=bearer(session_token())
+        )
+
+        result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 400
+
+    def test_정상이면_정규화_검색_후_200을_반환한다(self):
+        event = build_event(
+            "POST",
+            "/search",
+            body={"prompt": "강남에서 데이트하기 좋은 양식집"},
+            headers=bearer(session_token()),
+        )
+        places = [
+            {
+                "place_id": "33099281",
+                "name": "돈멜 본점",
+                "category": "돼지고기구이",
+                "road_address": "경기 성남시 분당구",
+                "review_count": 1258,
+            }
+        ]
+        with patch(
+            "search_normalizer.normalize_search_query", return_value="강남 양식"
+        ) as mock_normalize, patch(
+            "naver_review_collector.search_places", return_value=places
+        ) as mock_search, patch(
+            "web_store.log_search_usage"
+        ) as mock_log:
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["keyword"] == "강남 양식"
+        assert body["places"] == places
+        mock_normalize.assert_called_once_with("강남에서 데이트하기 좋은 양식집")
+        mock_search.assert_called_once_with("강남 양식")
+        # 검색 사용량이 identity로 기록된다.
+        mock_log.assert_called_once_with(INVITE_IDENTITY)
+
+    def test_결과가_없으면_빈_places로_200을_반환한다(self):
+        event = build_event(
+            "POST", "/search", body={"prompt": "없는곳"}, headers=bearer(session_token())
+        )
+        with patch(
+            "search_normalizer.normalize_search_query", return_value="없는곳"
+        ), patch(
+            "naver_review_collector.search_places", return_value=[]
+        ), patch("web_store.log_search_usage"):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["places"] == []
+
+    def test_수집_실패는_502를_반환한다(self):
+        event = build_event(
+            "POST", "/search", body={"prompt": "강남 양식"}, headers=bearer(session_token())
+        )
+        with patch(
+            "search_normalizer.normalize_search_query", return_value="강남 양식"
+        ), patch(
+            "naver_review_collector.search_places",
+            side_effect=naver_review_collector.ReviewCollectError("429 차단"),
+        ), patch("web_store.log_search_usage") as mock_log:
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 502
+        # 검색 실패 시 사용량은 기록하지 않는다.
+        mock_log.assert_not_called()
 
 
 class TestAnalyze:
@@ -146,6 +239,81 @@ class TestAnalyze:
         invoke_kwargs = mock_lambda_client.invoke.call_args.kwargs
         payload = json.loads(invoke_kwargs["Payload"].decode("utf-8"))
         assert payload["force_refresh"] is True
+
+    def test_place_id로_잡을_생성하고_worker에_전달한다(self):
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "33099281"},
+            headers=bearer(session_token()),
+        )
+
+        mock_lambda_client = MagicMock()
+        with patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 202
+        job_id = json.loads(result["body"])["job_id"]
+
+        # create_job(job_id, identity, naver_url="", place_id="33099281")
+        create_args = mock_create_job.call_args.args
+        assert create_args[0] == job_id
+        assert create_args[1] == INVITE_IDENTITY
+        assert create_args[2] == ""  # place_id 경로는 naver_url 빈 문자열
+        assert create_args[3] == "33099281"
+
+        # worker payload에 place_id 전달
+        invoke_kwargs = mock_lambda_client.invoke.call_args.kwargs
+        payload = json.loads(invoke_kwargs["Payload"].decode("utf-8"))
+        assert payload["place_id"] == "33099281"
+        assert payload["naver_url"] == ""
+
+    def test_place_id_형식이_틀리면_400을_반환한다(self):
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "abc123; DROP"},
+            headers=bearer(session_token()),
+        )
+
+        with patch("web_store.create_job") as mock_create_job:
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"])["error"] == "invalid place_id"
+        mock_create_job.assert_not_called()
+
+    def test_place_id와_naver_url_둘다_없으면_400을_반환한다(self):
+        event = build_event(
+            "POST", "/analyze", body={}, headers=bearer(session_token())
+        )
+
+        result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 400
+
+    def test_place_id가_naver_url보다_우선한다(self):
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "33099281", "naver_url": "https://naver.me/x"},
+            headers=bearer(session_token()),
+        )
+
+        mock_lambda_client = MagicMock()
+        with patch("web_store.create_job"), patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 202
+        invoke_kwargs = mock_lambda_client.invoke.call_args.kwargs
+        payload = json.loads(invoke_kwargs["Payload"].decode("utf-8"))
+        # place_id 우선 — naver_url은 빈 문자열로 무시된다.
+        assert payload["place_id"] == "33099281"
+        assert payload["naver_url"] == ""
 
 
 class TestResult:
@@ -261,8 +429,8 @@ class TestAdminStats:
         assert body["usage"][0]["llm_call_count"] == 1
         # 일별 시계열이 정돈돼 포함되고 Decimal이 JSON 정수로 직렬화된다.
         assert body["usage"][0]["daily"] == [
-            {"date": "2026-07-05", "total": 1, "llm": 1},
-            {"date": "2026-07-07", "total": 2, "llm": 0},
+            {"date": "2026-07-05", "total": 1, "llm": 1, "search": 0},
+            {"date": "2026-07-07", "total": 2, "llm": 0, "search": 0},
         ]
         # 원시 일별 키는 최상위에 노출되지 않는다(정돈된 형태만).
         assert "req#2026-07-05" not in body["usage"][0]

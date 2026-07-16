@@ -28,8 +28,9 @@ from dynamo_writer import convert_floats_to_decimal
 
 logger = logging.getLogger(__name__)
 
-# 일별 카운터 최상위 속성명 패턴 — "req#YYYY-MM-DD"(총요청)·"llm#YYYY-MM-DD"(LLM 호출)
-_DAILY_KEY_PATTERN = re.compile(r"^(req|llm)#(\d{4}-\d{2}-\d{2})$")
+# 일별 카운터 최상위 속성명 패턴 — "req#YYYY-MM-DD"(총요청)·"llm#YYYY-MM-DD"(LLM 호출)·
+# "search#YYYY-MM-DD"(검색 요청)
+_DAILY_KEY_PATTERN = re.compile(r"^(req|llm|search)#(\d{4}-\d{2}-\d{2})$")
 
 # 한국 표준시(KST) — created_at/updated_at/last_used_at ISO 8601 표기에 사용
 _KST = timezone(timedelta(hours=9))
@@ -75,9 +76,13 @@ def _usage_table():
 # ---------------------------------------------------------------------------
 # Jobs (비동기 분석 잡 상태)
 # ---------------------------------------------------------------------------
-def create_job(job_id: str, identity: str, naver_url: str) -> None:
+def create_job(
+    job_id: str, identity: str, naver_url: str, place_id: str = ""
+) -> None:
     """새 분석 잡을 ``processing`` 상태로 생성한다. 실패는 로깅만(비크리티컬).
 
+    naver_url·place_id는 둘 중 쓰지 않는 쪽이 빈 문자열이다(place_id 경로는 검색
+    결과에서 직접 분석). place_id는 하위호환을 위해 기본값 ""을 둔다.
     ttl 속성에 만료 epoch(now + WEB_JOB_TTL_SECONDS)을 기록해 자동 정리한다.
     """
     item = convert_floats_to_decimal(
@@ -86,6 +91,7 @@ def create_job(job_id: str, identity: str, naver_url: str) -> None:
             "status": _STATUS_PROCESSING,
             "identity": identity,
             "naver_url": naver_url,
+            "place_id": place_id,
             "created_at": _now_kst_iso(),
             "ttl": int(time.time()) + config.WEB_JOB_TTL_SECONDS,
         }
@@ -265,11 +271,39 @@ def log_usage(identity: str, cache_hit: bool) -> None:
         logger.warning("사용량 기록 실패(무시, identity=%s): %s", identity, error)
 
 
+def log_search_usage(identity: str) -> None:
+    """identity의 검색(정규화+장소검색) 사용량을 원자적으로 누적한다. 실패는 로깅만(비크리티컬).
+
+    - search_count: 검색 호출마다 +1 (누적 합계)
+    - search#YYYY-MM-DD: 오늘(KST) 검색 카운터 +1 (일별 시계열)
+    - last_used_at: 최근 사용 시각(KST ISO)
+
+    log_usage와 동일하게 DynamoDB ``ADD``로 누적한다(없는 최상위 숫자 속성을 0으로
+    자동 초기화). 속성명에 ``#``이 들어가므로 ``ExpressionAttributeNames`` 별칭을 쓴다.
+    """
+    today = datetime.now(_KST).date().isoformat()
+    try:
+        _usage_table().update_item(
+            Key={"identity": identity},
+            UpdateExpression=(
+                "ADD search_count :one, #search_day :one "
+                "SET last_used_at = :last_used_at"
+            ),
+            ExpressionAttributeNames={"#search_day": f"search#{today}"},
+            ExpressionAttributeValues={
+                ":one": 1,
+                ":last_used_at": _now_kst_iso(),
+            },
+        )
+    except Exception as error:  # noqa: BLE001 (검색 사용량 기록 실패는 비크리티컬)
+        logger.warning("검색 사용량 기록 실패(무시, identity=%s): %s", identity, error)
+
+
 def summarize_usage_item(item: dict) -> dict:
     """원시 web_usage 항목을 관리자 응답용으로 정돈한다(일별 시계열 재구성).
 
-    ``get_all_usage()``가 scan으로 반환한 원시 항목에서 ``req#*``·``llm#*`` 최상위
-    키를 파싱해 날짜별로 묶는다. 값 타입 변환(Decimal→JSON)은 여기서 하지 않고
+    ``get_all_usage()``가 scan으로 반환한 원시 항목에서 ``req#*``·``llm#*``·``search#*``
+    최상위 키를 파싱해 날짜별로 묶는다. 값 타입 변환(Decimal→JSON)은 여기서 하지 않고
     형태만 재구성한다 — 호출부(``web_api_handler._to_jsonable``)가 재귀 변환한다.
 
     반환 형태::
@@ -278,8 +312,9 @@ def summarize_usage_item(item: dict) -> dict:
             "identity": <str>,
             "total_count": <원시 값 또는 0>,
             "llm_call_count": <원시 값 또는 0>,
+            "search_count": <원시 값 또는 0>,
             "last_used_at": <원시 값 또는 "">,
-            "daily": [{"date": "YYYY-MM-DD", "total": <req>, "llm": <llm>}, ...],
+            "daily": [{"date": "YYYY-MM-DD", "total": <req>, "llm": <llm>, "search": <search>}, ...],
         }
 
     ``daily``는 date 문자열 오름차순(사전식 = 날짜순)으로 정렬하며, 어느 한 지표만
@@ -291,17 +326,22 @@ def summarize_usage_item(item: dict) -> dict:
         if not matched:
             continue
         metric, date_string = matched.group(1), matched.group(2)
-        bucket = daily_by_date.setdefault(date_string, {"total": 0, "llm": 0})
+        bucket = daily_by_date.setdefault(
+            date_string, {"total": 0, "llm": 0, "search": 0}
+        )
         if metric == "req":
             bucket["total"] = value
-        else:
+        elif metric == "llm":
             bucket["llm"] = value
+        else:
+            bucket["search"] = value
 
     daily = [
         {
             "date": date_string,
             "total": daily_by_date[date_string]["total"],
             "llm": daily_by_date[date_string]["llm"],
+            "search": daily_by_date[date_string]["search"],
         }
         for date_string in sorted(daily_by_date)
     ]
@@ -310,6 +350,7 @@ def summarize_usage_item(item: dict) -> dict:
         "identity": item.get("identity"),
         "total_count": item.get("total_count", 0),
         "llm_call_count": item.get("llm_call_count", 0),
+        "search_count": item.get("search_count", 0),
         "last_used_at": item.get("last_used_at", ""),
         "daily": daily,
     }

@@ -43,6 +43,10 @@ Parameters:
     Type: String
     Default: "true"
     Description: LLM 분석 기능 킬 스위치 (config.LLM_COMMENTARY_ENABLED). 비용 차단용.
+  SearchLlmEnabled:
+    Type: String
+    Default: "true"
+    Description: 검색어 정규화 LLM 킬 스위치 (config.SEARCH_LLM_ENABLED). 비용 차단용.
 
 # ---------------------------------------------------------------------------
 # 조건 (이메일이 있을 때만 예산 리소스 생성)
@@ -96,12 +100,19 @@ Resources:
           SECRETS_NAME: !Ref SecretsName
           DYNAMO_TABLE_PREFIX: !Ref TablePrefix
           WEB_WORKER_FUNCTION_NAME: !Ref WebWorkerFunction
+          SEARCH_LLM_ENABLED: !Ref SearchLlmEnabled
       Events:
         Invite:
           Type: HttpApi
           Properties:
             ApiId: !Ref WebHttpApi
             Path: /invite
+            Method: post
+        Search:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /search
             Method: post
         Analyze:
           Type: HttpApi
@@ -143,6 +154,13 @@ Resources:
               Action:
                 - dynamodb:Scan
               Resource:
+                - !GetAtt WebUsageTable.Arn
+            - Sid: UsageTableUpdate
+              Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                # /search 의 log_search_usage 가 검색 사용량을 누적 기록한다.
                 - !GetAtt WebUsageTable.Arn
             - Sid: SecretsManagerRead
               Effect: Allow
