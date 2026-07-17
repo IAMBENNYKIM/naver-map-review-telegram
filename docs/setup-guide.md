@@ -167,7 +167,7 @@ aws cloudformation describe-stacks --stack-name naver-review-web --profile naver
 # 2) build 후 조회한 값 전량 명시 + 비대화식(--no-confirm-changeset)
 sam build -t template-web.yaml
 sam deploy --stack-name naver-review-web --profile naver-review --region ap-northeast-2 --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset \
-  --parameter-overrides "SecretsName=naver-review/web TablePrefix=prod_ ProdReviewCacheTable=prod_review_cache AllowedOrigin=https://benny-naver-review.vercel.app BudgetLimitAmount=30 BudgetNotificationEmail=본인이메일 LlmCommentaryEnabled=true"
+  --parameter-overrides "SecretsName=naver-review/web TablePrefix=prod_ ProdReviewCacheTable=prod_review_cache AllowedOrigin=https://benny-naver-review.vercel.app BudgetLimitAmount=30 BudgetNotificationEmail=본인이메일 LlmCommentaryEnabled=true SearchLlmEnabled=true"
 ```
 
 배포 후 **변경 범위 확인**(코드만이어야 함): `aws cloudformation describe-stack-events --stack-name naver-review-web ... --max-items 12` → `WebApiFunction`·`WebWorkerFunction`만 UPDATE, 테이블·API GW·IAM 무변경, Telegram 스택(`naver-map-review-telegram`)은 `LastUpdatedTime` 불변인지 대조. **스모크**: sandbox가 `curl`을 막으면 `aws lambda invoke`로 대체 — 무인증 `/admin/stats` 이벤트를 던져 `statusCode 401`이 오면 새 코드가 ImportError 없이 기동한 것.
