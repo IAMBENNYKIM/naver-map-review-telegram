@@ -5,9 +5,13 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, fetchResult, requestAnalyze } from "@/lib/api";
 import type { AnalysisResult, AnalysisTarget } from "@/lib/types";
 
-/** 폴링 간격(ms)과 최대 시도 횟수. 약 60초 후 타임아웃. */
+// 초기 폴링 백오프(ms) — 1회차 전 250ms, 2회차 전 750ms로 앞당겨
+// 캐시 히트 시 첫 조회를 빠르게 한다. 3회차부터는 POLL_INTERVAL_MS로 정속.
+const POLL_DELAYS_MS = [250, 750];
+/** 정속 폴링 간격(ms). 백오프 소진 후 매회 적용. */
 const POLL_INTERVAL_MS = 1500;
-const MAX_POLL_ATTEMPTS = 40;
+// 최대 시도 횟수 — 총 폴링 예산 250 + 750 + 39×1500 = 59,500ms(약 59.5초, 현행 60초 유지).
+const MAX_POLL_ATTEMPTS = 41;
 
 /** 분석 실행 단계. */
 export type AnalysisPhase =
@@ -127,7 +131,9 @@ export function useAnalysis({
     }
 
     for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
-      await delay(POLL_INTERVAL_MS);
+      // 앞 2회는 백오프(250ms·750ms), 이후는 정속(1500ms)으로 대기한다.
+      const currentDelayMs = POLL_DELAYS_MS[attempt] ?? POLL_INTERVAL_MS;
+      await delay(currentDelayMs);
       if (runIdRef.current !== runId) {
         return; // 취소됨.
       }
