@@ -20,6 +20,10 @@ import os
 # httpx 로거 레벨을 WARNING으로 올려 토큰 유출을 차단한다.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+# Lambda 파이썬 런타임의 루트 로거 기본 레벨은 WARNING이라 운영·계측 INFO 로그가
+# CloudWatch에 출력되지 않는다. 애플리케이션 INFO 로그가 보이도록 레벨을 명시한다.
+logging.getLogger().setLevel(logging.INFO)
+
 # ---------------------------------------------------------------------------
 # 전역 상수 (모든 모듈 공유)
 # ---------------------------------------------------------------------------
