@@ -52,9 +52,9 @@ Telegram과 **완전히 격리된 별도 CloudFormation 스택**(제약: 기존 
 | `review_formatter.py` | 분석 JSON → MarkdownV2, 이스케이프 헬퍼 | 모든 동적 텍스트 이스케이프 강제 |
 | `dynamo_writer.py` | 캐시·last_query read/write | 쓰기 non-critical, float→Decimal |
 | `telegram_sender.py` | 발송·재시도(429/403/400)·개발자 에러 알림 | MarkdownV2 |
-| `web_api_handler.py` | WebApiFunction 진입점. 초대/세션·`/search` 동기 검색·잡 생성+비동기 invoke·결과 폴링·`/admin/stats` 통계(일별 `daily` 포함) (HttpApi 라우팅). `/analyze` place_id 경로는 캐시 직접 조회 후 히트 시 `create_completed_job`으로 done 잡 즉시 생성(워커 invoke 생략) | 빠른 응답, 소유권 404, Decimal→JSON |
+| `web_api_handler.py` | WebApiFunction 진입점. 초대/세션·`/search` 동기 검색·잡 생성+비동기 invoke·결과 폴링·`/admin/stats` 통계(일별 `daily` 포함) (HttpApi 라우팅). `/analyze` place_id 경로는 캐시 직접 조회 후 히트 시 `create_completed_job`으로 done 잡 즉시 생성(워커 invoke 생략). `naver_url`은 `_is_allowed_naver_url`로 SSRF 검증(https+허용호스트, 실패 400), 워커행 직전 `get_daily_llm_count ≥ WEB_DAILY_LLM_LIMIT`이면 429 | 빠른 응답, 소유권 404, Decimal→JSON. 보안 하드닝 근거 `docs/web-design.md` 결정 8 |
 | `web_worker_handler.py` | WebWorkerFunction 진입점. resolve(`place_id` 수신 시 생략)→캐시(web/prod read-through)→수집→분석→잡 결과·사용량 | `asyncio.run` 래퍼, Telegram/formatter 없음 |
-| `web_store.py` | 웹 DynamoDB(jobs·web캐시·usage) + prod 캐시 read-through. `log_usage`는 누적 합계+일별 카운터(`req#`/`llm#`/`search#`) ADD, `summarize_usage_item`이 `daily` 정돈. `lookup_cached_summary`(web→prod read-through, API·worker 공용)·`create_completed_job`(캐시 히트 시 done 잡 즉시 생성) | `dynamo_writer` 규약(non-critical), 읽기전용 prod |
+| `web_store.py` | 웹 DynamoDB(jobs·web캐시·usage) + prod 캐시 read-through. `log_usage`는 누적 합계+일별 카운터(`req#`/`llm#`/`search#`) ADD, `summarize_usage_item`이 `daily` 정돈. `lookup_cached_summary`(web→prod read-through, API·worker 공용)·`create_completed_job`(캐시 히트 시 done 잡 즉시 생성)·`get_daily_llm_count`(오늘 `llm#` 카운터 조회, 일일 상한용, 실패 시 0+경고) | `dynamo_writer` 규약(non-critical), 읽기전용 prod |
 | `web_auth.py` | HMAC 세션토큰 발급/검증·초대코드→identity·admin 토큰 | 상수시간 비교, 순수 로직 |
 | `search_normalizer.py` | 자연어 프롬프트 → 네이버 검색어 정규화(Claude Haiku 1회). `SEARCH_LLM_ENABLED` off·어떤 실패에도 원문 폴백 | non-critical, 필수 경로 아님 |
 
@@ -68,13 +68,14 @@ Telegram과 **완전히 격리된 별도 CloudFormation 스택**(제약: 기존 
 
 ## 웹 인프라 (template-web.yaml, 별도 스택)
 
-- **WebApiFunction**: python3.12, 256MB, **20s**(정규화 LLM 5초 + 네이버 검색 동기 처리 여유). HttpApi(CORS `AllowedOrigin`) 라우트 `POST /invite`·`POST /search`·`POST /analyze`·`GET /result/{job_id}`·`GET /admin/stats`. 환경변수 `SEARCH_LLM_ENABLED`·**`PROD_REVIEW_CACHE_TABLE`(캐시 히트 직결용)**. 권한: WebWorker invoke, jobs Get/Put/Update·usage Scan·usage UpdateItem(검색 카운터)·**webcache Get/Put(캐시 히트 직결 조회·write-back)**·**prod 캐시 읽기전용(DynamoDBReadPolicy)**·Secrets read. (`/search`는 동기 처리 — 잡+폴링 아님, 근거 `docs/web-design.md` 결정 6. `/analyze` 캐시 히트 직결은 결정 7)
+- **WebApiFunction**: python3.12, 256MB, **20s**(정규화 LLM 5초 + 네이버 검색 동기 처리 여유). HttpApi(CORS `AllowedOrigin`, **`DefaultRouteSettings` 스로틀 burst 10/rate 5**) 라우트 `POST /invite`·`POST /search`·`POST /analyze`·`GET /result/{job_id}`·`GET /admin/stats`. 환경변수 `SEARCH_LLM_ENABLED`·**`PROD_REVIEW_CACHE_TABLE`(캐시 히트 직결용)**. 권한: WebWorker invoke, jobs Get/Put/Update·usage Scan·usage Update/**GetItem(일일 상한 조회)**·**webcache Get/Put(캐시 히트 직결 조회·write-back)**·**prod 캐시 읽기전용(DynamoDBReadPolicy)**·Secrets read. (`/search`는 동기 처리 — 잡+폴링 아님, 근거 `docs/web-design.md` 결정 6. `/analyze` 캐시 히트 직결은 결정 7. SSRF 검증·일일 상한·스로틀은 결정 8)
 - **WebWorkerFunction**: python3.12, 512MB, 120s(비동기 invoke). 권한: jobs Update·webcache Get/Put·usage Update·**prod 캐시 GetItem(읽기전용, 이름 참조)**·Secrets read.
 - **워밍 Schedule**: EventBridge Schedule(`rate(5 minutes)`, 입력 `{"warmup": true}`)이 두 Lambda를 상시 워밍한다. 두 핸들러 최상단에서 warmup 이벤트를 감지해 파이프라인 없이 즉시 반환(콜드스타트 대응, 비용 사실상 0).
 - 테이블: `${TablePrefix}web_review_cache`(PK place_key), `${TablePrefix}web_jobs`(PK job_id, TTL `ttl`, `place_id` 속성=검색 경로 직행 분석용), `${TablePrefix}web_usage`(PK identity, 누적 합계 `total_count`·`llm_call_count`·`search_count` + 일별 최상위 카운터 `req#YYYY-MM-DD`·`llm#YYYY-MM-DD`·`search#YYYY-MM-DD`). 모두 PAY_PER_REQUEST. **일별 카운터·`search_count`·`place_id`는 스키마리스 속성 추가라 테이블·템플릿 변경 불필요.**
 - **MonthlyCostBudget**(Condition `HasBudgetEmail`): 계정 전역 월 예산 알림 50/80/100%.
-- Parameters: `TablePrefix`·`SecretsName`(기본 `naver-review/web`)·`ProdReviewCacheTable`·`AllowedOrigin`·`BudgetLimitAmount`·`BudgetNotificationEmail`·`LlmCommentaryEnabled`·`SearchLlmEnabled`(검색 정규화 킬 스위치).
+- Parameters: `TablePrefix`·`SecretsName`(기본 `naver-review/web`)·`ProdReviewCacheTable`·`AllowedOrigin`(**기본값=Vercel 도메인** — 배포 시 override 누락해도 `*`로 원복되지 않게 고정, 결정 8-④)·`BudgetLimitAmount`·`BudgetNotificationEmail`·`LlmCommentaryEnabled`·`SearchLlmEnabled`(검색 정규화 킬 스위치).
 - prod 캐시 테이블은 이 스택이 **정의하지 않음**(Telegram 스택 소유 — 이름으로만 참조).
+- **프론트 보안 헤더**: `web-frontend/next.config.ts`의 `headers()`가 전 경로에 CSP·HSTS·`X-Frame-Options`·`X-Content-Type-Options`·`Referrer-Policy`·`Permissions-Policy`를 적용(Vercel Next 런타임 위 동작 — 정적 export 아님). 근거 `docs/web-design.md` 결정 8-⑤.
 
 ## 디렉토리
 

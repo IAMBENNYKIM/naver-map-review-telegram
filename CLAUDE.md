@@ -71,10 +71,11 @@
 15. 웹은 **별도 SAM 스택**(`template-web.yaml`) — 기존 Telegram 봇 영향 0이 절대 제약. 배포는 반드시 `/deploy-web` 스킬을 경유한다.
 16. WebWorker는 Telegram `prod_review_cache`를 **읽기전용 read-through**만 한다. Telegram WorkerFunction invoke 권한 없음.
 17. 응답 구조는 비동기 잡+폴링. 관리자 통계는 `web_usage`에 누적 합계 + 일별 카운터(`req#`/`llm#`, 스키마리스 `ADD`) — 상세는 `ARCHITECTURE.md`.
+18. 웹 `/analyze`의 `naver_url`은 서버측 허용호스트 검증(`_is_allowed_naver_url` — `https` + `WEB_ALLOWED_NAVER_HOSTS`)을 통과한 것만 처리한다(SSRF 방어 — 프론트 검사는 신뢰 경계 아님). 캐시 미스로 LLM을 호출하는 경로(캐시 히트 제외)는 `WEB_DAILY_LLM_LIMIT` 일일 상한 검사를 거친다(비용 폭탄 방어). 상세·근거는 `docs/web-design.md` 결정 8.
 
 ### 네이밍·언어
-18. Python은 변수·함수 `snake_case`, 클래스 `PascalCase`, 상수 `UPPER_SNAKE_CASE`. `web-frontend/` TypeScript는 `camelCase`/`PascalCase`. 줄임말 대신 목적이 드러나는 이름(`data` 대신 `review_list`). 한글 식별자 금지.
-19. 주석·docstring·로그·커밋 메시지는 한국어. 단 `requirements.txt` 주석만 ASCII 유지 (`sam build` 시 cp949 로케일 pip 실패 방지).
+19. Python은 변수·함수 `snake_case`, 클래스 `PascalCase`, 상수 `UPPER_SNAKE_CASE`. `web-frontend/` TypeScript는 `camelCase`/`PascalCase`. 줄임말 대신 목적이 드러나는 이름(`data` 대신 `review_list`). 한글 식별자 금지.
+20. 주석·docstring·로그·커밋 메시지는 한국어. 단 `requirements.txt` 주석만 ASCII 유지 (`sam build` 시 cp949 로케일 pip 실패 방지).
 
 ## 함정 등록부 (한 번 겪은 사고 — 반복 금지)
 
@@ -86,7 +87,7 @@
 | samconfig 누출 | samconfig.toml은 Telegram 전용 — 웹 배포에 `--stack-name` 누락 시 봇 스택을 덮어씀 | setup-guide §8-2 |
 | 데스크톱 UA | `m.place.naver.com`이 429 차단 → 모바일 Chrome UA | findings.md §1 |
 | GraphQL 인트로스펙션 | 즉시 429 + 지속 차단 → 절대 금지 | findings.md §4 |
-| cp949 pip 실패 | `requirements.txt` 비ASCII 주석 → `sam build` 실패 → ASCII 유지 | 제약 19 |
+| cp949 pip 실패 | `requirements.txt` 비ASCII 주석 → `sam build` 실패 → ASCII 유지 | 제약 20 |
 | PowerShell `curl` | `Invoke-WebRequest` 별칭이라 `-H`/`-d` 불가 → `curl.exe` 또는 `Invoke-RestMethod` | setup-guide 문제해결 |
 | 콘솔 cp949 크래시 | 한국어·특수문자 print 시 UnicodeEncodeError → `PYTHONUTF8=1` 설정 | — |
 | Vercel 브랜치 | Production Branch=main — feature push는 Preview만 생성 → `main` 병합해야 프로덕션 반영 | setup-guide §8-3 |

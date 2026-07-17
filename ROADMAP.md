@@ -95,10 +95,15 @@
   - **rate limit 간격 방식(#5)**: `_respect_rate_limit()`가 마지막 요청 시각(monotonic) 기준 잔여분만 대기(첫 요청 대기 0, 요청 간 0.5초 간격 유지).
   - **단계별 latency 계측(#6)**: 워커 파이프라인(cache/collect/llm/save)·검색(normalize/search/usage) 소요 INFO 1줄 로깅(PII 없음) + 루트 로거 레벨 INFO 명시(Lambda 기본 WARNING이라 INFO 미출력이던 문제 수정).
   - **실측(2026-07-17, 웜)**: /analyze 캐시 미스 26.9초→11.0초(**59% 단축**), /search 1.73초→1.2~1.4초, 캐시 히트 폴링 대기 1.5초→0.25초. 설계 근거·전후 실측표는 `docs/web-design.md` 결정 7. 관련 커밋 `f1452ad`~`827c780`, 프로덕션 배포·실측 완료.
+- [x] 5-10 (A+D) 외부 보안 진단 대응 하드닝 (2026-07-18):
+  - **SSRF 차단**: `/analyze`의 `naver_url`을 서버측 허용호스트(`https`+`WEB_ALLOWED_NAVER_HOSTS`) 검증, 실패 400.
+  - **per-identity 일일 LLM 상한**(백로그 승격): `WEB_DAILY_LLM_LIMIT`(기본 50, 캐시 미스만 카운트) 초과 시 429. 5-1 사용량 카운터(`llm#`) 재사용.
+  - **API GW 스로틀**(burst 10/rate 5) + **CORS 기본값 고정**(template 기본을 Vercel 도메인으로 — `*` 원복 함정 제거) + **프론트 보안 헤더**(CSP·HSTS·X-Frame-Options 등, `next.config.ts`).
+  - 검증 pytest 226·`sam validate`·`npm build/lint` 그린, 웹 스택 배포·Telegram 무손상 확인·Vercel 헤더 실측. 설계 근거는 `docs/web-design.md` 결정 8. 커밋 `f94a943`·`87e821e`·`fa98e0a`.
 
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
-- per-identity 일일 쿼터 (Phase 6 — 웹 확산 시. 5-1 사용량 카운터 재사용)
+- ~~per-identity 일일 쿼터~~ → 5-10에서 구현 완료(`WEB_DAILY_LLM_LIMIT`, 2026-07-18). 확산 시 한도 조정·검색 경로 쿼터 확대는 잔여 과제.
 - 카카오 소셜 로그인 전환 / 카카오 채널·알림톡
 - 카카오 SDK 리치 공유(피드 템플릿) — 카카오 개발자 앱 등록·JS키·도메인 등록 필요 (현재는 Web Share API로 대체)
 
