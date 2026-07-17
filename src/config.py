@@ -29,7 +29,9 @@ RATE_LIMIT_DELAY: float = 0.5     # 외부(네이버) 요청 간 딜레이(초) 
 # ---------------------------------------------------------------------------
 # Claude API 리뷰 분석 (review_analyst)
 # ---------------------------------------------------------------------------
-ANTHROPIC_MODEL: str = "claude-sonnet-4-5"   # 분석 생성 모델 (변경 시 이 상수만 수정)
+# 분석 생성 모델 (변경 시 이 상수만 수정)
+# Sonnet 4.5 대비 응답 42% 단축·품질 동등 (2026-07-17 실측)으로 Haiku 4.5 채택.
+ANTHROPIC_MODEL: str = "claude-haiku-4-5"
 # 분석 기능 킬 스위치 — 기본 true라 기존 동작 불변, 환경변수로 끌 수 있다(비용 차단용).
 LLM_COMMENTARY_ENABLED: bool = os.getenv("LLM_COMMENTARY_ENABLED", "true").lower() == "true"
 LLM_MAX_OUTPUT_TOKENS: int = 2000            # 분석 응답 max_tokens

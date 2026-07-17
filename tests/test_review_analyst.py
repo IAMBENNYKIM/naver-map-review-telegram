@@ -88,6 +88,44 @@ class TestAnalyzeReviewsSuccess:
         assert "고기 325회" in user_content
         assert "고기가 맛있어요" in user_content
 
+    def test_anthropic_생성자에_timeout과_max_retries를_전달한다(self):
+        # tail latency 방지 — timeout=60.0, max_retries=0 (폴백 경로가 있으므로 재시도 0).
+        mock_module = make_anthropic_mock(json.dumps(VALID_SUMMARY, ensure_ascii=False))
+        with patch.dict(sys.modules, {"anthropic": mock_module}):
+            review_analyst.analyze_reviews(PLACE_DETAIL, REVIEW_LIST)
+
+        ctor_kwargs = mock_module.Anthropic.call_args.kwargs
+        assert ctor_kwargs["timeout"] == 60.0
+        assert ctor_kwargs["max_retries"] == 0
+
+    def test_menus를_mentions_내림차순으로_정렬한다(self):
+        # 모델이 정렬 규칙을 어겨도 코드에서 mentions 내림차순으로 재정렬한다.
+        unsorted = json.loads(json.dumps(VALID_SUMMARY))
+        unsorted["menus"] = [
+            {"name": "A", "sentiment": "추천", "mentions": 3, "note": "x"},
+            {"name": "B", "sentiment": "추천", "mentions": 20, "note": "y"},
+            {"name": "C", "sentiment": "추천", "mentions": 7, "note": "z"},
+        ]
+
+        result = run_with_mock_response(json.dumps(unsorted, ensure_ascii=False))
+
+        menus = json.loads(result)["menus"]
+        assert [menu["mentions"] for menu in menus] == [20, 7, 3]
+
+    def test_mentions가_int가_아니면_0으로_취급해_정렬한다(self):
+        data = json.loads(json.dumps(VALID_SUMMARY))
+        data["menus"] = [
+            {"name": "A", "sentiment": "추천", "mentions": "많음", "note": "x"},
+            {"name": "B", "sentiment": "추천", "mentions": 5, "note": "y"},
+        ]
+
+        result = run_with_mock_response(json.dumps(data, ensure_ascii=False))
+
+        menus = json.loads(result)["menus"]
+        # int가 아닌 mentions("많음")는 0 취급 → mentions 5인 B가 앞선다.
+        assert menus[0]["name"] == "B"
+        assert menus[1]["name"] == "A"
+
 
 class TestAnalyzeReviewsFallback:
     def test_깨진_json이면_none을_반환한다(self):

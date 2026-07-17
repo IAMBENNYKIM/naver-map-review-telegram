@@ -29,8 +29,13 @@ _SYSTEM_PROMPT = (
     '"note": "한 줄 근거"}], "caution": "주의사항 또는 null"}\n'
     "\n"
     "규칙:\n"
-    "- 여러 리뷰에서 반복 언급되는 내용 위주로, 과장 없이 객관적으로 요약한다.\n"
-    "- menus는 언급 2회 이상인 메뉴만, 최대 8개, mentions 내림차순으로 정렬한다.\n"
+    "- 여러 리뷰에서 반복 언급되는 내용 위주로, 과장 없이 객관적으로 요약한다. "
+    "리뷰에 없는 내용을 추측해 쓰지 않는다.\n"
+    "- menus의 name은 방문자 리뷰 본문에 등장하는 실제 판매 메뉴명(요리 이름)만 쓴다. "
+    "메뉴 언급 통계의 라벨(재료·범주 단어)을 그대로 옮겨 적지 마라.\n"
+    "- mentions는 해당 메뉴가 리뷰 본문에서 언급된 횟수를 직접 센 값이다. "
+    "통계 수치를 복사하지 마라.\n"
+    "- menus는 리뷰 언급 2회 이상인 메뉴만, 최대 8개, mentions 내림차순으로 정렬한다.\n"
     '- sentiment는 반드시 "추천"/"비추천"/"호불호" 중 하나만 사용한다.\n'
     "- pros/cons는 각각 2~4개 불릿로 작성한다.\n"
     "- caution은 여러 리뷰에서 반복되는 주의사항(웨이팅 등)이 있을 때만 쓰고, 없으면 null."
@@ -67,15 +72,38 @@ def analyze_reviews(place_detail: dict, review_list: list[dict]) -> str | None:
     summary = _parse_and_validate(raw_response_text)
     if summary is None:
         return None
+    # 방어적 정규화: 모델이 mentions 내림차순 정렬 규칙을 어기는 사례가 실측됨 →
+    # 코드에서 다시 정렬한다. mentions가 int가 아니면 0으로 취급한다.
+    _sort_menus_by_mentions(summary)
     # 정규화된 JSON 재직렬화 — 캐시에 저장할 원문
     return json.dumps(summary, ensure_ascii=False)
+
+
+def _sort_menus_by_mentions(summary: dict) -> None:
+    """summary의 menus를 mentions 내림차순으로 제자리 정렬한다(방어적 정규화).
+
+    mentions가 int가 아니면 0으로 취급해 정렬 키로 쓴다.
+    """
+    menus = summary.get("menus")
+    if not isinstance(menus, list):
+        return
+
+    def _mentions_key(menu: dict) -> int:
+        mentions = menu.get("mentions") if isinstance(menu, dict) else None
+        return mentions if isinstance(mentions, int) else 0
+
+    menus.sort(key=_mentions_key, reverse=True)
 
 
 def _call_claude(place_detail: dict, review_list: list[dict]) -> str:
     """anthropic SDK로 분석을 생성한다(lazy import — config 패턴)."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    # anthropic 기본값(timeout 10분·재시도 2회)이면 tail latency가 커진다.
+    # 분석 실패 시 폴백 응답 경로가 있으므로 재시도 0이 설계 의도다(search_normalizer와 동일 패턴).
+    client = anthropic.Anthropic(
+        api_key=config.ANTHROPIC_API_KEY, timeout=60.0, max_retries=0
+    )
     response = client.messages.create(
         model=config.ANTHROPIC_MODEL,
         max_tokens=config.LLM_MAX_OUTPUT_TOKENS,
