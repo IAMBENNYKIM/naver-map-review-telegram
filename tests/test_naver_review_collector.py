@@ -461,3 +461,96 @@ class TestSearchPlaces:
             naver_review_collector.search_places("강남 양식")
 
         assert call_counter["count"] == 1  # 재시도 금지
+
+
+# ---------------------------------------------------------------------------
+# _respect_rate_limit — 간격 보장 방식 rate limit (하드 제약 13)
+# ---------------------------------------------------------------------------
+class TestRespectRateLimit:
+    def test_첫_요청은_대기하지_않는다(self, monkeypatch):
+        # _last_naver_request_monotonic이 None이면 sleep 없이 타임스탬프만 갱신한다.
+        monkeypatch.setattr(config, "RATE_LIMIT_DELAY", 0.5)
+        monkeypatch.setattr(
+            naver_review_collector, "_last_naver_request_monotonic", None
+        )
+        monkeypatch.setattr(
+            naver_review_collector.time, "monotonic", lambda: 100.0
+        )
+        sleeps: list = []
+        monkeypatch.setattr(
+            naver_review_collector.time, "sleep", lambda seconds: sleeps.append(seconds)
+        )
+
+        naver_review_collector._respect_rate_limit()
+
+        assert sleeps == []
+        # 첫 요청 후 타임스탬프가 갱신된다.
+        assert naver_review_collector._last_naver_request_monotonic == 100.0
+
+    def test_간격_미달이면_잔여분만_대기한다(self, monkeypatch):
+        # 직전 요청 100.0, 현재 100.2 → 경과 0.2 → 잔여 0.3초만 sleep.
+        monkeypatch.setattr(config, "RATE_LIMIT_DELAY", 0.5)
+        monkeypatch.setattr(
+            naver_review_collector, "_last_naver_request_monotonic", 100.0
+        )
+        times = iter([100.2, 100.5])  # now, 갱신용 monotonic
+        monkeypatch.setattr(
+            naver_review_collector.time, "monotonic", lambda: next(times)
+        )
+        sleeps: list = []
+        monkeypatch.setattr(
+            naver_review_collector.time, "sleep", lambda seconds: sleeps.append(seconds)
+        )
+
+        naver_review_collector._respect_rate_limit()
+
+        assert len(sleeps) == 1
+        assert abs(sleeps[0] - 0.3) < 1e-9
+
+    def test_간격_초과면_대기하지_않는다(self, monkeypatch):
+        # 직전 요청 100.0, 현재 101.0 → 경과 1.0 > 0.5 → sleep 없음.
+        monkeypatch.setattr(config, "RATE_LIMIT_DELAY", 0.5)
+        monkeypatch.setattr(
+            naver_review_collector, "_last_naver_request_monotonic", 100.0
+        )
+        monkeypatch.setattr(
+            naver_review_collector.time, "monotonic", lambda: 101.0
+        )
+        sleeps: list = []
+        monkeypatch.setattr(
+            naver_review_collector.time, "sleep", lambda seconds: sleeps.append(seconds)
+        )
+
+        naver_review_collector._respect_rate_limit()
+
+        assert sleeps == []
+
+    def test_연속_http_요청은_첫_요청_무sleep_이후_잔여_sleep한다(
+        self, install_transport, monkeypatch
+    ):
+        # _http_get 경로를 통해 첫 요청은 sleep 0, 두 번째는 간격만큼 대기하는지 확인한다.
+        monkeypatch.setattr(config, "RATE_LIMIT_DELAY", 0.5)
+        monkeypatch.setattr(
+            naver_review_collector, "_last_naver_request_monotonic", None
+        )
+        # monotonic: 첫 요청(now, 갱신) → 100.0, 100.0 / 두 번째(now, 갱신) → 100.1, 100.1
+        times = iter([100.0, 100.0, 100.1, 100.1])
+        monkeypatch.setattr(
+            naver_review_collector.time, "monotonic", lambda: next(times)
+        )
+        sleeps: list = []
+        monkeypatch.setattr(
+            naver_review_collector.time, "sleep", lambda seconds: sleeps.append(seconds)
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text="ok")
+
+        install_transport(handler)
+
+        naver_review_collector._http_get("https://example.com/1", context="테스트")
+        naver_review_collector._http_get("https://example.com/2", context="테스트")
+
+        # 첫 요청: sleep 없음. 두 번째: 경과 0.1 → 잔여 0.4초 sleep.
+        assert len(sleeps) == 1
+        assert abs(sleeps[0] - 0.4) < 1e-9

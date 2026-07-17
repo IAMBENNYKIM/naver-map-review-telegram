@@ -52,6 +52,10 @@ _VISITOR_REVIEWS_QUERY = (
 # 테스트에서 httpx.MockTransport 주입용 (프로덕션에서는 None → 기본 전송 계층)
 _transport: httpx.BaseTransport | None = None
 
+# 마지막 네이버 요청 시각(time.monotonic 기준, 초). None이면 아직 요청한 적 없음.
+# Lambda는 단일 스레드로 실행되므로 락 없이 안전하다.
+_last_naver_request_monotonic: float | None = None
+
 
 class ReviewCollectError(Exception):
     """리뷰 수집 실패(네트워크·429 차단·구조 변경·place 해석 실패 등) 시 raise."""
@@ -289,9 +293,26 @@ def _build_client() -> httpx.Client:
     )
 
 
+def _respect_rate_limit() -> None:
+    """직전 네이버 요청과의 간격이 RATE_LIMIT_DELAY 미만이면 잔여분만 대기한다.
+
+    간격 방식 rate limit(하드 제약 13 — 요청 간 0.5초 간격 보장). 첫 요청은
+    대기하지 않는다(_last_naver_request_monotonic이 None). 대기 후 타임스탬프를
+    갱신한다. Lambda는 단일 스레드라 락이 필요 없다.
+    """
+    global _last_naver_request_monotonic
+    now = time.monotonic()
+    if _last_naver_request_monotonic is not None:
+        elapsed = now - _last_naver_request_monotonic
+        remaining = config.RATE_LIMIT_DELAY - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+    _last_naver_request_monotonic = time.monotonic()
+
+
 def _http_get(url: str, context: str) -> httpx.Response:
-    """Rate Limit 대기 후 GET 요청. 네트워크 오류·429는 ReviewCollectError."""
-    time.sleep(config.RATE_LIMIT_DELAY)
+    """Rate Limit 간격 보장 후 GET 요청. 네트워크 오류·429는 ReviewCollectError."""
+    _respect_rate_limit()
     try:
         with _build_client() as client:
             response = client.get(url)
@@ -302,8 +323,8 @@ def _http_get(url: str, context: str) -> httpx.Response:
 
 
 def _http_post_json(url: str, body: object, context: str) -> httpx.Response:
-    """Rate Limit 대기 후 JSON POST 요청. 네트워크 오류·429는 ReviewCollectError."""
-    time.sleep(config.RATE_LIMIT_DELAY)
+    """Rate Limit 간격 보장 후 JSON POST 요청. 네트워크 오류·429는 ReviewCollectError."""
+    _respect_rate_limit()
     try:
         with _build_client() as client:
             response = client.post(
