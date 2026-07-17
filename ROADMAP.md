@@ -87,6 +87,15 @@
   - **프론트**: 첫 화면 탭 구조(검색 기본 / 붙여넣기 보조, `?prefill=`은 붙여넣기 탭 활성), `useAnalysis` 훅으로 분석·폴링 공유, `SearchView` 후보 클릭→place_id 분석, 관리자 테이블 검색 횟수 컬럼.
   - 관련 커밋 `d9bca7a`·`da0f378`·`579abb3`·`1ef05cc`. 프로덕션 live 실측 통과. 설계 근거·거부 대안은 `docs/web-design.md` 결정 6, 검색 실측은 `experiments/findings.md` §6.
 
+- [x] 5-9 (A/D) 웹 응답 시간 단축 6종 (2026-07-17):
+  - **캐시 히트 API 직결(#1)**: `/analyze` place_id 경로에서 WebApiFunction이 공유 캐시(`lookup_cached_summary`)를 직접 조회, 히트 시 `create_completed_job`으로 done 잡 즉시 생성·워커 invoke 생략(API 계약 무변경 202). `naver_url` 경로는 종전대로 워커행.
+  - **리뷰 분석 모델 Haiku 4.5 전환(#2)**: `ANTHROPIC_MODEL=claude-haiku-4-5`(리뷰 48건 실측 Sonnet 4.5 16.5초→Haiku 9.8초, 품질 동등). 프롬프트 결함(menus에 장소 통계 라벨·수치 복사) 수정 + mentions 내림차순 방어 정렬, anthropic 클라이언트 timeout 60초·재시도 0. Sonnet 5는 기본 thinking으로 비스트리밍 호출과 비호환이라 제외. `ANTHROPIC_MODEL`은 Telegram 공유 상수(재배포 전까지 종전 모델).
+  - **워밍 핑(#3)**: EventBridge Schedule(`rate(5 minutes)`, `{"warmup": true}`)이 두 Lambda 상시 워밍, 핸들러 최상단 즉시 반환(콜드스타트 실측 14.6초 대응, 비용 사실상 0).
+  - **프론트 폴링 백오프(#4)**: `useAnalysis` 첫 조회 250ms→750ms→이후 1500ms 정속(총 예산 59.5초), 종전 고정 1.5초 선대기 제거.
+  - **rate limit 간격 방식(#5)**: `_respect_rate_limit()`가 마지막 요청 시각(monotonic) 기준 잔여분만 대기(첫 요청 대기 0, 요청 간 0.5초 간격 유지).
+  - **단계별 latency 계측(#6)**: 워커 파이프라인(cache/collect/llm/save)·검색(normalize/search/usage) 소요 INFO 1줄 로깅(PII 없음) + 루트 로거 레벨 INFO 명시(Lambda 기본 WARNING이라 INFO 미출력이던 문제 수정).
+  - **실측(2026-07-17, 웜)**: /analyze 캐시 미스 26.9초→11.0초(**59% 단축**), /search 1.73초→1.2~1.4초, 캐시 히트 폴링 대기 1.5초→0.25초. 설계 근거·전후 실측표는 `docs/web-design.md` 결정 7. 관련 커밋 `f1452ad`~`827c780`, 프로덕션 배포·실측 완료.
+
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
 - per-identity 일일 쿼터 (Phase 6 — 웹 확산 시. 5-1 사용량 카운터 재사용)
