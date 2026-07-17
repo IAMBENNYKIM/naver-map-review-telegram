@@ -441,6 +441,53 @@ class TestUsage:
 
 
 # ---------------------------------------------------------------------------
+# 일일 LLM 카운트 조회 (get_daily_llm_count) — 상한 강제용
+# ---------------------------------------------------------------------------
+class TestDailyLlmCount:
+    def _today(self) -> str:
+        from datetime import datetime, timezone, timedelta
+
+        return datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+
+    def test_오늘_llm_카운터가_있으면_그_값을_int로_반환한다(self, web_tables):
+        # log_usage(cache_hit=False) 2회 → 오늘 llm 카운터 2
+        web_store.log_usage("친구A", cache_hit=False)
+        web_store.log_usage("친구A", cache_hit=False)
+
+        count = web_store.get_daily_llm_count("친구A")
+        assert count == 2
+        assert isinstance(count, int)
+
+    def test_항목이_없으면_0을_반환한다(self, web_tables):
+        assert web_store.get_daily_llm_count("존재하지않는사용자") == 0
+
+    def test_오늘_카운터_속성이_없으면_0을_반환한다(self, web_tables):
+        # 검색만 한 사용자는 llm# 속성이 없다 → 0
+        web_store.log_search_usage("친구A")
+        assert web_store.get_daily_llm_count("친구A") == 0
+
+    def test_캐시_히트만_한_사용자는_오늘_llm이_0이다(self, web_tables):
+        # ADD로 llm#today가 0으로 초기화되지만 값은 0 → 상한 미달로 취급.
+        web_store.log_usage("친구A", cache_hit=True)
+        assert web_store.get_daily_llm_count("친구A") == 0
+
+    def test_다른_날짜_카운터는_오늘_집계에_포함되지_않는다(self, web_tables):
+        # 어제 날짜 llm 카운터를 직접 심어도 오늘 조회에는 잡히지 않는다.
+        web_tables["usage"].put_item(
+            Item={"identity": "친구A", "llm#2020-01-01": Decimal(99)}
+        )
+        assert web_store.get_daily_llm_count("친구A") == 0
+
+    def test_조회_실패는_경고_로그와_함께_0을_반환한다(self):
+        with patch.object(
+            web_store, "_usage_table", side_effect=RuntimeError("연결 실패")
+        ), patch.object(web_store.logger, "warning") as mock_warning:
+            assert web_store.get_daily_llm_count("친구A") == 0
+        # "실패 시 0"은 상한을 우회시키므로 반드시 경고를 남긴다.
+        mock_warning.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # 일별 시계열 정돈 (summarize_usage_item)
 # ---------------------------------------------------------------------------
 class TestSummarizeUsageItem:

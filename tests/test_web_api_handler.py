@@ -4,6 +4,9 @@ import json
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+import config
 import naver_review_collector
 import web_api_handler
 import web_auth
@@ -12,6 +15,18 @@ import web_auth
 VALID_INVITE_CODE = "invite-code-1"
 INVITE_IDENTITY = "친구A"
 ADMIN_TOKEN = "test-web-admin-token"
+
+
+@pytest.fixture(autouse=True)
+def _stub_daily_llm_count():
+    """일일 LLM 카운트를 기본 0으로 고정한다(상한 미달 = 통과).
+
+    /analyze 워커 경로는 상한 검사에서 web_store.get_daily_llm_count를 호출하는데,
+    모의(mock)가 없으면 실제 DynamoDB 접근을 시도한다(느림·비결정적). 상한 자체를
+    검증하는 테스트는 이 반환값을 자기 with 블록에서 재지정해 덮어쓴다(내부 patch 우선).
+    """
+    with patch("web_store.get_daily_llm_count", return_value=0):
+        yield
 
 
 def build_event(
@@ -446,6 +461,188 @@ class TestAnalyzeCacheHitDirect:
         mock_lookup.assert_not_called()
         mock_create_job.assert_called_once()
         mock_lambda_client.invoke.assert_called_once()
+
+
+class TestAnalyzeSsrf:
+    """naver_url 서버 측 허용목록 검증(SSRF 방어)."""
+
+    def _analyze(self, naver_url: str) -> dict:
+        return build_event(
+            "POST",
+            "/analyze",
+            body={"naver_url": naver_url},
+            headers=bearer(session_token()),
+        )
+
+    def test_허용호스트_https는_통과해_워커를_invoke한다(self):
+        mock_lambda_client = MagicMock()
+        with patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(
+                self._analyze("https://naver.me/GB3423bX"), None
+            )
+
+        assert result["statusCode"] == 202
+        mock_create_job.assert_called_once()
+        mock_lambda_client.invoke.assert_called_once()
+
+    def test_허용호스트_서브도메인도_통과한다(self):
+        mock_lambda_client = MagicMock()
+        with patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(
+                self._analyze("https://m.place.naver.com/restaurant/33099281"), None
+            )
+
+        assert result["statusCode"] == 202
+        mock_create_job.assert_called_once()
+
+    def test_http_스킴은_400으로_차단한다(self):
+        with patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client"
+        ) as mock_boto_client:
+            result = web_api_handler.lambda_handler(
+                self._analyze("http://naver.me/GB3423bX"), None
+            )
+
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"])["error"] == "invalid url"
+        mock_create_job.assert_not_called()
+        mock_boto_client.assert_not_called()
+
+    def test_타호스트는_400으로_차단한다(self):
+        with patch("web_store.create_job") as mock_create_job:
+            result = web_api_handler.lambda_handler(
+                self._analyze("https://evil.example.com/x"), None
+            )
+
+        assert result["statusCode"] == 400
+        mock_create_job.assert_not_called()
+
+    def test_허용호스트를_접미사로_위장한_도메인은_차단한다(self):
+        # "naver.me.evil.com"·"evilnaver.me" 등은 허용 호스트와 정확히 같지도,
+        # 그 서브도메인(".naver.me"·".naver.com"로 끝남)도 아니므로 차단돼야 한다.
+        with patch("web_store.create_job") as mock_create_job:
+            result = web_api_handler.lambda_handler(
+                self._analyze("https://naver.me.evil.com/x"), None
+            )
+
+        assert result["statusCode"] == 400
+        mock_create_job.assert_not_called()
+
+    def test_파싱불가_문자열은_400으로_차단한다(self):
+        with patch("web_store.create_job") as mock_create_job:
+            result = web_api_handler.lambda_handler(self._analyze("not a url"), None)
+
+        assert result["statusCode"] == 400
+        mock_create_job.assert_not_called()
+
+    def test_헬퍼_함수_판정(self):
+        # 헬퍼 단위 검증 — True/False 경계.
+        assert web_api_handler._is_allowed_naver_url("https://naver.me/abc") is True
+        assert web_api_handler._is_allowed_naver_url("https://map.naver.com/p") is True
+        assert web_api_handler._is_allowed_naver_url("https://NAVER.ME/abc") is True
+        assert web_api_handler._is_allowed_naver_url("http://naver.me/abc") is False
+        assert web_api_handler._is_allowed_naver_url("https://naver.com.evil.io") is False
+        assert web_api_handler._is_allowed_naver_url("ftp://naver.me/abc") is False
+        assert web_api_handler._is_allowed_naver_url("https:///nohost") is False
+
+
+class TestAnalyzeDailyLimit:
+    """identity별 일일 LLM 상한 강제(캐시 미스 = 비용 발생 경로에만 적용)."""
+
+    def _place_event(self) -> dict:
+        return build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "33099281"},
+            headers=bearer(session_token()),
+        )
+
+    def test_상한_미만이면_워커를_invoke한다(self):
+        mock_lambda_client = MagicMock()
+        with patch(
+            "web_store.get_daily_llm_count",
+            return_value=config.WEB_DAILY_LLM_LIMIT - 1,
+        ), patch(
+            "web_store.lookup_cached_summary", return_value=None
+        ), patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(self._place_event(), None)
+
+        assert result["statusCode"] == 202
+        mock_create_job.assert_called_once()
+        mock_lambda_client.invoke.assert_called_once()
+
+    def test_상한_이상이면_429로_막고_워커를_invoke하지_않는다(self):
+        mock_lambda_client = MagicMock()
+        with patch(
+            "web_store.get_daily_llm_count",
+            return_value=config.WEB_DAILY_LLM_LIMIT,
+        ), patch(
+            "web_store.lookup_cached_summary", return_value=None
+        ), patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(self._place_event(), None)
+
+        assert result["statusCode"] == 429
+        assert json.loads(result["body"])["error"] == "daily limit exceeded"
+        mock_create_job.assert_not_called()
+        mock_lambda_client.invoke.assert_not_called()
+
+    def test_force_refresh_경로에도_상한이_걸린다(self):
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "33099281", "force_refresh": True},
+            headers=bearer(session_token()),
+        )
+        mock_lambda_client = MagicMock()
+        with patch(
+            "web_store.get_daily_llm_count",
+            return_value=config.WEB_DAILY_LLM_LIMIT,
+        ), patch(
+            "web_store.lookup_cached_summary"
+        ) as mock_lookup, patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 429
+        # force_refresh는 캐시 조회를 건너뛰므로 lookup은 호출되지 않는다.
+        mock_lookup.assert_not_called()
+        mock_create_job.assert_not_called()
+        mock_lambda_client.invoke.assert_not_called()
+
+    def test_캐시_히트는_상한을_우회한다(self):
+        cached = {
+            "summary_json": '{"overall": "총평"}',
+            "place_name": "돈멜 본점",
+            "address": "경기 성남시",
+            "review_count": 42,
+            "updated_at": "2026-07-07T12:00:00+09:00",
+        }
+        mock_lambda_client = MagicMock()
+        mock_get_count = MagicMock(return_value=config.WEB_DAILY_LLM_LIMIT + 100)
+        with patch(
+            "web_store.lookup_cached_summary", return_value=cached
+        ), patch(
+            "web_store.get_daily_llm_count", mock_get_count
+        ), patch("web_store.create_completed_job") as mock_create_completed, patch(
+            "web_store.log_usage"
+        ), patch("boto3.client", return_value=mock_lambda_client):
+            result = web_api_handler.lambda_handler(self._place_event(), None)
+
+        # 캐시 히트는 비용 0 — 상한 검사 이전에 202로 종료된다.
+        assert result["statusCode"] == 202
+        mock_create_completed.assert_called_once()
+        mock_lambda_client.invoke.assert_not_called()
+        # 상한 검사는 아예 수행되지 않는다.
+        mock_get_count.assert_not_called()
 
 
 class TestWarmup:

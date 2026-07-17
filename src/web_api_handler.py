@@ -25,6 +25,7 @@ import re
 import time
 import uuid
 from decimal import Decimal
+from urllib.parse import urlparse
 
 import config
 import naver_review_collector
@@ -38,6 +39,31 @@ _JSON_HEADERS = {"content-type": "application/json"}
 
 # place_id 형식 검증 — 숫자만 허용 (네이버 place_id 체계)
 _PLACE_ID_PATTERN = re.compile(r"^\d+$")
+
+
+def _is_allowed_naver_url(url: str) -> bool:
+    """naver_url이 안전한 네이버 링크인지 검증한다(SSRF 방어).
+
+    통과 조건: (a) 스킴이 정확히 ``https`` 이고 (b) 호스트네임이
+    ``config.WEB_ALLOWED_NAVER_HOSTS`` 의 한 호스트와 정확히 일치하거나 그 서브도메인일 때.
+    파싱 실패·비 https·비허용 호스트는 모두 False. urlparse는 hostname을 소문자로
+    돌려주므로 대소문자 무시가 보장된다.
+
+    보안(제약 7): 이 함수·호출부는 검증 실패 시 URL 원문을 로그에 남기지 않는다.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    if parsed.scheme != "https":
+        return False
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    return any(
+        hostname == allowed or hostname.endswith("." + allowed)
+        for allowed in config.WEB_ALLOWED_NAVER_HOSTS
+    )
 
 
 def lambda_handler(event, context):
@@ -172,6 +198,11 @@ def _handle_analyze(event: dict) -> dict:
         naver_url = ""
     elif naver_url:
         naver_url = str(naver_url)
+        # SSRF 방어: https + 네이버 허용 호스트(서브도메인 포함)만 통과시킨다.
+        # 실패 시 URL 원문은 로그에 남기지 않는다(제약 7).
+        if not _is_allowed_naver_url(naver_url):
+            logger.warning("잘못된 naver_url — 400")
+            return _response(400, {"error": "invalid url"})
         place_id = ""
     else:
         return _response(400, {"error": "naver_url or place_id is required"})
@@ -203,6 +234,14 @@ def _handle_analyze(event: dict) -> dict:
                 "캐시 히트 직결 잡 완료 (job_id=%s, identity=%s)", job_id, identity
             )
             return _response(202, {"job_id": job_id})
+
+    # 여기까지 왔다는 것은 캐시 히트로 끝나지 않았다는 뜻 — 워커가 실제 LLM 분석(비용 발생)을
+    # 수행할 경로다(place_id 캐시 미스·force_refresh·naver_url 경로 모두 포함). 캐시 히트 직결
+    # (위 return)은 이 검사를 거치지 않으므로 비용 0인 히트는 제한되지 않는다.
+    # identity별 오늘(KST) LLM 호출 수가 상한 이상이면 워커를 invoke하지 않고 429로 막는다.
+    if web_store.get_daily_llm_count(identity) >= config.WEB_DAILY_LLM_LIMIT:
+        logger.warning("일일 LLM 상한 초과 — 429 (identity=%s)", identity)
+        return _response(429, {"error": "daily limit exceeded"})
 
     web_store.create_job(job_id, identity, naver_url, place_id)
     _invoke_web_worker(job_id, identity, naver_url, place_id, force_refresh)

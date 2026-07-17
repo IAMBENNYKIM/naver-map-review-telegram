@@ -97,6 +97,16 @@ PROD_REVIEW_CACHE_TABLE: str = os.getenv("PROD_REVIEW_CACHE_TABLE", "prod_review
 WEB_SESSION_TTL_SECONDS: int = 7 * 24 * 3600
 WEB_JOB_TTL_SECONDS: int = 3600
 
+# SSRF 방어: /analyze의 naver_url이 향할 수 있는 허용 호스트 집합.
+# 매칭 규칙은 `hostname == h or hostname.endswith("." + h)` — 즉 정확히 이 호스트이거나
+# 그 서브도메인일 때만 통과한다. "naver.com"이 map.naver.com·m.place.naver.com 등
+# 리다이렉트 목적지 전부를 서브도메인으로 포괄하고, 공유 단축 URL은 "naver.me"가 담당한다.
+WEB_ALLOWED_NAVER_HOSTS: frozenset[str] = frozenset({"naver.me", "naver.com"})
+
+# identity별 1일 신규 분석(LLM 호출) 상한 — 비용 폭탄 방어. 캐시 히트는 제외한다
+# (비용이 없으므로 상한 대상이 아니다). 환경변수 WEB_DAILY_LLM_LIMIT로 override 가능.
+WEB_DAILY_LLM_LIMIT: int = int(os.getenv("WEB_DAILY_LLM_LIMIT", "50"))
+
 # get_secret()가 추출하는 자격증명 키 목록 (.env / Secrets Manager 공통 스키마)
 # ★ .env.example 의 키 목록과 정확히 일치시킨다.
 _SECRET_KEYS: tuple[str, ...] = (

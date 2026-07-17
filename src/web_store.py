@@ -351,6 +351,29 @@ def log_usage(identity: str, cache_hit: bool) -> None:
         logger.warning("사용량 기록 실패(무시, identity=%s): %s", identity, error)
 
 
+def get_daily_llm_count(identity: str) -> int:
+    """identity의 오늘(KST) LLM 호출 수(``llm#YYYY-MM-DD``)를 조회한다.
+
+    일일 신규 분석(LLM 호출) 상한 강제용. ``GetItem`` 후 오늘 날짜 카운터 속성값을
+    int로 반환한다. 항목·속성이 없으면 0을 반환한다(첫 사용자·오늘 첫 요청).
+
+    조회 실패(네트워크·권한 등)도 0을 반환한다 — 상한 검사가 사용자 요청을 막지
+    않도록(비크리티컬). 다만 "실패 시 0"은 상한을 우회시키므로, 조회 실패는
+    ``logger.warning``으로 남겨 무음 우회를 방지한다. 날짜 키 생성은 ``log_usage``와
+    동일하게 KST 기준을 사용한다.
+    """
+    today = datetime.now(_KST).date().isoformat()
+    try:
+        response = _usage_table().get_item(Key={"identity": identity})
+    except Exception as error:  # noqa: BLE001 (조회 실패는 0으로 간주 — 상한 우회 방지 위해 경고)
+        logger.warning(
+            "일일 LLM 카운트 조회 실패(0으로 간주, identity=%s): %s", identity, error
+        )
+        return 0
+    item = response.get("Item") or {}
+    return int(item.get(f"llm#{today}", 0))
+
+
 def log_search_usage(identity: str) -> None:
     """identity의 검색(정규화+장소검색) 사용량을 원자적으로 누적한다. 실패는 로깅만(비크리티컬).
 
