@@ -249,7 +249,9 @@ class TestAnalyze:
         )
 
         mock_lambda_client = MagicMock()
-        with patch("web_store.create_job") as mock_create_job, patch(
+        with patch(
+            "web_store.lookup_cached_summary", return_value=None
+        ), patch("web_store.create_job") as mock_create_job, patch(
             "boto3.client", return_value=mock_lambda_client
         ):
             result = web_api_handler.lambda_handler(event, None)
@@ -303,7 +305,9 @@ class TestAnalyze:
         )
 
         mock_lambda_client = MagicMock()
-        with patch("web_store.create_job"), patch(
+        with patch(
+            "web_store.lookup_cached_summary", return_value=None
+        ), patch("web_store.create_job"), patch(
             "boto3.client", return_value=mock_lambda_client
         ):
             result = web_api_handler.lambda_handler(event, None)
@@ -314,6 +318,143 @@ class TestAnalyze:
         # place_id 우선 — naver_url은 빈 문자열로 무시된다.
         assert payload["place_id"] == "33099281"
         assert payload["naver_url"] == ""
+
+
+class TestAnalyzeCacheHitDirect:
+    """place_id 경로 캐시 히트 직결 — 워커 invoke 없이 완료 잡을 즉시 생성한다."""
+
+    _CACHED = {
+        "summary_json": '{"overall": "총평"}',
+        "place_name": "돈멜 본점",
+        "address": "경기 성남시",
+        "review_count": 42,
+        "updated_at": "2026-07-07T12:00:00+09:00",
+    }
+
+    def test_히트면_완료잡_생성_후_워커없이_202를_반환한다(self):
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "33099281"},
+            headers=bearer(session_token()),
+        )
+
+        mock_lambda_client = MagicMock()
+        with patch(
+            "web_store.lookup_cached_summary", return_value=self._CACHED
+        ) as mock_lookup, patch(
+            "web_store.create_completed_job"
+        ) as mock_create_completed, patch(
+            "web_store.create_job"
+        ) as mock_create_job, patch(
+            "web_store.log_usage"
+        ) as mock_log_usage, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 202
+        job_id = json.loads(result["body"])["job_id"]
+        assert job_id
+
+        mock_lookup.assert_called_once_with("33099281")
+
+        # 완료 잡이 캐시 내용으로 생성된다.
+        mock_create_completed.assert_called_once()
+        completed_args = mock_create_completed.call_args
+        assert completed_args.args[0] == job_id
+        assert completed_args.args[1] == INVITE_IDENTITY
+        assert completed_args.args[2] == "33099281"
+        assert completed_args.kwargs["summary_json"] == self._CACHED["summary_json"]
+        assert completed_args.kwargs["updated_at"] == self._CACHED["updated_at"]
+        assert completed_args.kwargs["review_count"] == 42
+
+        # 캐시 히트 사용량 기록(cache_hit=True).
+        mock_log_usage.assert_called_once_with(INVITE_IDENTITY, cache_hit=True)
+
+        # 워커 invoke·create_job(processing)은 호출되지 않는다.
+        mock_lambda_client.invoke.assert_not_called()
+        mock_create_job.assert_not_called()
+
+    def test_미스면_기존_흐름대로_워커를_invoke한다(self):
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "33099281"},
+            headers=bearer(session_token()),
+        )
+
+        mock_lambda_client = MagicMock()
+        with patch(
+            "web_store.lookup_cached_summary", return_value=None
+        ) as mock_lookup, patch(
+            "web_store.create_completed_job"
+        ) as mock_create_completed, patch(
+            "web_store.create_job"
+        ) as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 202
+        mock_lookup.assert_called_once_with("33099281")
+        # 미스 → 완료 잡 없이 기존 흐름(잡 생성 + 워커 invoke).
+        mock_create_completed.assert_not_called()
+        mock_create_job.assert_called_once()
+        mock_lambda_client.invoke.assert_called_once()
+
+    def test_force_refresh면_lookup을_건너뛴다(self):
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"place_id": "33099281", "force_refresh": True},
+            headers=bearer(session_token()),
+        )
+
+        mock_lambda_client = MagicMock()
+        with patch(
+            "web_store.lookup_cached_summary"
+        ) as mock_lookup, patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 202
+        # force_refresh면 캐시를 조회하지 않고 곧바로 워커 경로를 탄다.
+        mock_lookup.assert_not_called()
+        mock_create_job.assert_called_once()
+        mock_lambda_client.invoke.assert_called_once()
+
+    def test_naver_url_경로는_lookup을_호출하지_않는다(self):
+        # place_id를 모르는 naver_url 경로는 캐시 직결 대상이 아니다(워커가 resolve 후 조회).
+        event = build_event(
+            "POST",
+            "/analyze",
+            body={"naver_url": "https://naver.me/GB3423bX"},
+            headers=bearer(session_token()),
+        )
+
+        mock_lambda_client = MagicMock()
+        with patch(
+            "web_store.lookup_cached_summary"
+        ) as mock_lookup, patch("web_store.create_job") as mock_create_job, patch(
+            "boto3.client", return_value=mock_lambda_client
+        ):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 202
+        mock_lookup.assert_not_called()
+        mock_create_job.assert_called_once()
+        mock_lambda_client.invoke.assert_called_once()
+
+
+class TestWarmup:
+    def test_warmup_이벤트는_라우팅없이_200을_반환한다(self):
+        with patch("web_store.create_job") as mock_create_job:
+            result = web_api_handler.lambda_handler({"warmup": True}, None)
+
+        assert result["statusCode"] == 200
+        mock_create_job.assert_not_called()
 
 
 class TestResult:

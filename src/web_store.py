@@ -152,6 +152,48 @@ def complete_job(
         logger.warning("잡 완료 기록 실패(무시, job_id=%s): %s", job_id, error)
 
 
+def create_completed_job(
+    job_id: str,
+    identity: str,
+    place_id: str,
+    summary_json: str,
+    place_name: str,
+    address: str,
+    review_count: int,
+    updated_at: str,
+    naver_url: str = "",
+) -> None:
+    """캐시 히트를 곧바로 ``done`` 상태 잡으로 생성한다(워커 우회용). 실패는 로깅만(비크리티컬).
+
+    create_job(``processing``)+complete_job(``done``)을 거친 잡과 **동일한 아이템 형태**가
+    되도록 두 함수가 쓰는 필드를 모두 채운다(cache_hit=True 포함). created_at·completed_at은
+    즉시 완료이므로 같은 시각으로 기록한다. /result 응답은 이 잡과 워커 완료 잡을 구분하지 못한다.
+    """
+    now = _now_kst_iso()
+    item = convert_floats_to_decimal(
+        {
+            "job_id": job_id,
+            "status": _STATUS_DONE,
+            "identity": identity,
+            "naver_url": naver_url,
+            "place_id": place_id,
+            "created_at": now,
+            "ttl": int(time.time()) + config.WEB_JOB_TTL_SECONDS,
+            "summary_json": summary_json,
+            "place_name": place_name,
+            "address": address,
+            "review_count": review_count,
+            "cache_hit": True,
+            "updated_at": updated_at,
+            "completed_at": now,
+        }
+    )
+    try:
+        _jobs_table().put_item(Item=item)
+    except Exception as error:  # noqa: BLE001 (완료 잡 생성 실패는 비크리티컬)
+        logger.warning("완료 잡 생성 실패(무시, job_id=%s): %s", job_id, error)
+
+
 def fail_job(job_id: str, error_message: str) -> None:
     """잡을 ``error`` 상태로 갱신하고 오류 메시지를 기록한다. 실패는 로깅만(비크리티컬)."""
     try:
@@ -229,6 +271,44 @@ def get_prod_cached_summary(place_id: str) -> dict | None:
         logger.warning("prod 캐시 조회 실패(무시, place_id=%s): %s", place_id, error)
         return None
     return response.get("Item")
+
+
+def lookup_cached_summary(place_id: str) -> dict | None:
+    """web 캐시 → prod 캐시(읽기전용 read-through) 순으로 요약을 조회한다.
+
+    web 히트: 그대로 사용. prod 히트: web 캐시에도 저장(워밍)한다. 둘 다 미스면 None.
+    반환 dict는 summary_json/place_name/address/review_count/updated_at 키로 정규화된다.
+    (WebApiFunction 캐시 히트 직결·WebWorkerFunction 공용 진입점.)
+    """
+    web_item = get_web_cached_summary(place_id)
+    if web_item:
+        return _normalize_cache_item(web_item)
+
+    prod_item = get_prod_cached_summary(place_id)
+    if prod_item:
+        normalized = _normalize_cache_item(prod_item)
+        # prod 히트를 web 캐시로 워밍한다(다음 조회부터 web 캐시가 응답).
+        save_web_summary(
+            place_id,
+            normalized["place_name"],
+            normalized["address"],
+            normalized["summary_json"],
+            normalized["review_count"],
+        )
+        return normalized
+
+    return None
+
+
+def _normalize_cache_item(item: dict) -> dict:
+    """캐시 항목에서 잡 완료에 필요한 필드를 추출한다(Decimal review_count는 int로)."""
+    return {
+        "summary_json": item.get("summary_json", ""),
+        "place_name": item.get("place_name", ""),
+        "address": item.get("address", ""),
+        "review_count": int(item.get("review_count", 0)),
+        "updated_at": item.get("updated_at", ""),
+    }
 
 
 # ---------------------------------------------------------------------------

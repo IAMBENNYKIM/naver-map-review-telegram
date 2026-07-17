@@ -257,3 +257,21 @@ class TestFailurePaths:
         assert result["statusCode"] == 200
         mocks["complete_job"].assert_not_called()
         mocks["fail_job"].assert_not_called()
+
+
+class TestWarmup:
+    def test_warmup_이벤트는_파이프라인_없이_즉시_반환한다(self, monkeypatch):
+        mocks = _patch_common(monkeypatch)
+        # 워밍 이벤트에서는 resolve_place조차 호출되면 안 된다.
+        monkeypatch.setattr(
+            naver_review_collector,
+            "resolve_place",
+            MagicMock(side_effect=AssertionError("워밍 경로에서 호출되면 안 됨")),
+        )
+
+        result = web_worker_handler.lambda_handler({"warmup": True}, None)
+
+        assert result["statusCode"] == 200
+        mocks["complete_job"].assert_not_called()
+        mocks["fail_job"].assert_not_called()
+        mocks["log_usage"].assert_not_called()

@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from decimal import Decimal
 
@@ -44,6 +45,11 @@ def lambda_handler(event, context):
 
     최상위에서 모든 예외를 흡수해 내부 상세를 노출하지 않고 500을 반환한다.
     """
+    # 워밍 핑(EventBridge 5분 주기) — 콜드스타트 방지용. 라우팅 없이 즉시 반환한다.
+    # 5분마다 INFO 로그를 남기지 않도록 DEBUG로만 기록한다.
+    if isinstance(event, dict) and event.get("warmup"):
+        logger.debug("워밍 핑 수신 — 즉시 반환")
+        return {"statusCode": 200}
     try:
         http_context = (event.get("requestContext") or {}).get("http") or {}
         method = str(http_context.get("method", "")).upper()
@@ -112,17 +118,31 @@ def _handle_search(event: dict) -> dict:
     if not prompt or not str(prompt).strip():
         return _response(400, {"error": "prompt is required"})
 
+    normalize_started = time.monotonic()
     keyword = search_normalizer.normalize_search_query(str(prompt))
+    normalize_seconds = time.monotonic() - normalize_started
+
+    search_started = time.monotonic()
     try:
         place_list = naver_review_collector.search_places(keyword)
     except naver_review_collector.ReviewCollectError as error:
         # keyword를 로그에 남기지 않는다(사용자 입력 파생 텍스트).
         logger.warning("장소 검색 실패 (identity=%s): %s", identity, error)
         return _response(502, {"error": "place search failed"})
+    search_seconds = time.monotonic() - search_started
 
+    usage_started = time.monotonic()
     web_store.log_search_usage(identity)
+    usage_seconds = time.monotonic() - usage_started
+
+    # 단계별 소요를 한 줄로 기록한다. prompt·keyword 내용은 절대 남기지 않는다(PII).
     logger.info(
-        "검색 완료 (identity=%s, 결과=%d건)", identity, len(place_list)
+        "검색 소요(identity=%s, normalize=%.2fs, search=%.2fs, usage=%.2fs, 결과=%d건)",
+        identity,
+        normalize_seconds,
+        search_seconds,
+        usage_seconds,
+        len(place_list),
     )
     return _response(200, {"keyword": keyword, "places": place_list})
 
@@ -160,6 +180,30 @@ def _handle_analyze(event: dict) -> dict:
     force_refresh = bool(body.get("force_refresh", False))
 
     job_id = uuid.uuid4().hex
+
+    # 캐시 히트 직결: place_id 경로이고 force_refresh가 아닐 때만 캐시를 먼저 조회한다.
+    # 히트면 완료 잡을 즉시 생성하고 워커 invoke 없이 202를 반환한다(콜드스타트·invoke 왕복 절감).
+    # naver_url 경로는 place_id를 모르므로 캐시 조회 없이 기존 흐름(워커가 resolve 후 조회)을 탄다.
+    if place_id and not force_refresh:
+        cached = web_store.lookup_cached_summary(place_id)
+        if cached is not None:
+            web_store.create_completed_job(
+                job_id,
+                identity,
+                place_id,
+                summary_json=cached["summary_json"],
+                place_name=cached["place_name"],
+                address=cached["address"],
+                review_count=cached["review_count"],
+                updated_at=cached["updated_at"],
+            )
+            # 워커의 캐시 히트 경로와 동일하게 사용량을 기록한다(cache_hit=True).
+            web_store.log_usage(identity, cache_hit=True)
+            logger.info(
+                "캐시 히트 직결 잡 완료 (job_id=%s, identity=%s)", job_id, identity
+            )
+            return _response(202, {"job_id": job_id})
+
     web_store.create_job(job_id, identity, naver_url, place_id)
     _invoke_web_worker(job_id, identity, naver_url, place_id, force_refresh)
     logger.info("분석 잡 생성·invoke 완료 (job_id=%s, identity=%s)", job_id, identity)

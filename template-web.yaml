@@ -102,6 +102,8 @@ Resources:
           DYNAMO_TABLE_PREFIX: !Ref TablePrefix
           WEB_WORKER_FUNCTION_NAME: !Ref WebWorkerFunction
           SEARCH_LLM_ENABLED: !Ref SearchLlmEnabled
+          # 캐시 히트 직결(lookup_cached_summary)이 prod 캐시를 read-through로 읽는다.
+          PROD_REVIEW_CACHE_TABLE: !Ref ProdReviewCacheTable
       Events:
         Invite:
           Type: HttpApi
@@ -133,8 +135,15 @@ Resources:
             ApiId: !Ref WebHttpApi
             Path: /admin/stats
             Method: get
+        # 워밍 핑 — 5분 주기로 콜드스타트 방지(핸들러가 warmup 이벤트를 즉시 반환).
+        Warmup:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Input: '{"warmup": true}'
       Policies:
-        # 최소 권한: WebWorkerFunction 비동기 invoke + jobs 읽기/쓰기 + usage Scan + 시크릿 읽기
+        # 최소 권한: WebWorkerFunction 비동기 invoke + jobs 읽기/쓰기 + usage Scan/Update +
+        #   web 캐시 읽기/쓰기(캐시 히트 직결·워밍 저장) + 시크릿 읽기
         - Statement:
             - Sid: InvokeWebWorkerFunction
               Effect: Allow
@@ -161,14 +170,25 @@ Resources:
               Action:
                 - dynamodb:UpdateItem
               Resource:
-                # /search 의 log_search_usage 가 검색 사용량을 누적 기록한다.
+                # /search 의 log_search_usage · 캐시 히트 직결의 log_usage 가 사용량을 누적 기록한다.
                 - !GetAtt WebUsageTable.Arn
+            - Sid: WebCacheTableAccess
+              Effect: Allow
+              Action:
+                # 캐시 히트 직결(lookup_cached_summary) 읽기 + prod 히트 워밍 저장 쓰기.
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource:
+                - !GetAtt WebCacheTable.Arn
             - Sid: SecretsManagerRead
               Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource:
                 - !Sub "arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretsName}-*"
+        # prod 캐시 테이블(이 스택이 소유하지 않음)은 읽기 전용만 부여한다(하드 제약 16 — 쓰기 금지).
+        - DynamoDBReadPolicy:
+            TableName: !Ref ProdReviewCacheTable
 
   # -------------------------------------------------------------------------
   # WebWorkerFunction — place 해석·수집·Claude 분석·잡 완료 기록 (무거운 파이프라인)
@@ -188,6 +208,13 @@ Resources:
           DYNAMO_TABLE_PREFIX: !Ref TablePrefix
           PROD_REVIEW_CACHE_TABLE: !Ref ProdReviewCacheTable
           LLM_COMMENTARY_ENABLED: !Ref LlmCommentaryEnabled
+      Events:
+        # 워밍 핑 — 5분 주기로 콜드스타트 방지(핸들러가 warmup 이벤트를 즉시 반환).
+        Warmup:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Input: '{"warmup": true}'
       Policies:
         # 최소 권한: jobs 갱신 + web 캐시 읽기/쓰기 + usage 갱신 + prod 캐시 읽기(전용) + 시크릿
         - Statement:

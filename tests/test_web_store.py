@@ -112,6 +112,86 @@ class TestJobLifecycle:
 
 
 # ---------------------------------------------------------------------------
+# 완료 잡 직접 생성 (캐시 히트 직결)
+# ---------------------------------------------------------------------------
+class TestCreateCompletedJob:
+    def test_완료_잡을_바로_생성한다(self, web_tables):
+        web_store.create_completed_job(
+            "job-c",
+            "친구A",
+            "33099281",
+            summary_json='{"overall": "총평"}',
+            place_name="돈멜 본점",
+            address="경기 성남시",
+            review_count=50,
+            updated_at="2026-07-07T12:00:00+09:00",
+        )
+
+        job = web_store.get_job("job-c")
+        assert job["status"] == "done"
+        assert job["cache_hit"] is True
+        assert job["summary_json"] == '{"overall": "총평"}'
+        assert job["place_name"] == "돈멜 본점"
+        assert job["address"] == "경기 성남시"
+        assert job["review_count"] == 50
+        assert job["updated_at"] == "2026-07-07T12:00:00+09:00"
+        assert job["identity"] == "친구A"
+        assert job["place_id"] == "33099281"
+        assert "+09:00" in job["completed_at"]
+
+    def test_기존_완료_잡과_동일한_아이템_형태다(self, web_tables):
+        # create_job(processing)+complete_job(done) 경로
+        web_store.create_job("job-legacy", "친구A", "", "33099281")
+        web_store.complete_job(
+            job_id="job-legacy",
+            summary_json="{}",
+            place_name="이름",
+            address="주소",
+            review_count=10,
+            cache_hit=True,
+            updated_at="2026-07-07T12:00:00+09:00",
+        )
+        legacy = web_store.get_job("job-legacy")
+
+        # create_completed_job 직결 경로
+        web_store.create_completed_job(
+            "job-direct",
+            "친구A",
+            "33099281",
+            summary_json="{}",
+            place_name="이름",
+            address="주소",
+            review_count=10,
+            updated_at="2026-07-07T12:00:00+09:00",
+        )
+        direct = web_store.get_job("job-direct")
+
+        # /result가 읽는 필드를 포함해 아이템 필드 집합이 완전히 동일해야 한다.
+        assert set(direct.keys()) == set(legacy.keys())
+        assert direct["cache_hit"] is True
+        assert legacy["cache_hit"] is True
+        # /result 응답 필드가 두 경로에서 동일한 값이다.
+        for key in ("status", "summary_json", "place_name", "address",
+                    "review_count", "cache_hit", "updated_at"):
+            assert direct[key] == legacy[key]
+
+    def test_생성_실패는_예외를_전파하지_않는다(self):
+        with patch.object(
+            web_store, "_jobs_table", side_effect=RuntimeError("연결 실패")
+        ):
+            web_store.create_completed_job(
+                "job-x",
+                "친구A",
+                "33099281",
+                summary_json="{}",
+                place_name="이름",
+                address="주소",
+                review_count=1,
+                updated_at="2026-07-07T12:00:00+09:00",
+            )
+
+
+# ---------------------------------------------------------------------------
 # 웹 캐시
 # ---------------------------------------------------------------------------
 class TestWebCache:
@@ -215,6 +295,49 @@ class TestProdCacheReadThrough:
             web_store, "_prod_cache_table", side_effect=RuntimeError("연결 실패")
         ):
             assert web_store.get_prod_cached_summary("place-prod") is None
+
+
+# ---------------------------------------------------------------------------
+# lookup_cached_summary (web → prod read-through 공용 진입점)
+# ---------------------------------------------------------------------------
+class TestLookupCachedSummary:
+    def test_web_히트면_web_값을_반환하고_prod를_보지_않는다(self, web_tables):
+        web_store.save_web_summary(
+            "place-1", "이름", "주소", '{"o": "web"}', 30
+        )
+
+        result = web_store.lookup_cached_summary("place-1")
+
+        assert result["summary_json"] == '{"o": "web"}'
+        assert result["place_name"] == "이름"
+        assert result["address"] == "주소"
+        assert result["review_count"] == 30
+        assert "+09:00" in result["updated_at"]
+
+    def test_prod_히트면_web에_워밍하고_반환한다(self, web_tables):
+        web_tables["prod_cache"].put_item(
+            Item={
+                "place_key": "place-2",
+                "place_name": "기존 장소",
+                "address": "기존 주소",
+                "summary_json": '{"o": "기존"}',
+                "review_count": 7,
+                "updated_at": "2026-01-01T00:00:00+09:00",
+            }
+        )
+
+        result = web_store.lookup_cached_summary("place-2")
+
+        assert result["summary_json"] == '{"o": "기존"}'
+        assert result["review_count"] == 7
+        # prod 히트가 web 캐시로 워밍돼 다음 조회부터 web이 응답한다.
+        warmed = web_store.get_web_cached_summary("place-2")
+        assert warmed is not None
+        assert warmed["place_name"] == "기존 장소"
+        assert warmed["summary_json"] == '{"o": "기존"}'
+
+    def test_양쪽_미스면_none이다(self, web_tables):
+        assert web_store.lookup_cached_summary("no-such-place") is None
 
 
 # ---------------------------------------------------------------------------

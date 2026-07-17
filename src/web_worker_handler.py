@@ -18,6 +18,7 @@ WebApiFunction이 비동기 invoke한 잡을 받아 무거운 파이프라인을
 
 import asyncio
 import logging
+import time
 
 import config
 import naver_review_collector
@@ -34,6 +35,11 @@ _GENERIC_FAILURE_MESSAGE = "분석 중 문제가 발생했어요"
 
 def lambda_handler(event, context):
     """WebWorkerFunction 진입점(동기 래퍼). asyncio.run으로 실행."""
+    # 워밍 핑(EventBridge 5분 주기) — 콜드스타트 방지용. 처리 없이 즉시 반환한다.
+    # 5분마다 INFO 로그를 남기지 않도록 DEBUG로만 기록한다.
+    if isinstance(event, dict) and event.get("warmup"):
+        logger.debug("워밍 핑 수신 — 즉시 반환")
+        return {"statusCode": 200, "body": "warmup"}
     return asyncio.run(_async_main(event, context))
 
 
@@ -88,7 +94,9 @@ def _run_pipeline(
 
     # 2) 캐시 조회 — web 우선, 없으면 prod 캐시를 읽어 web 캐시에 워밍한다.
     #    force_refresh면 캐시를 무시하고 신규 분석 경로로 직행한다.
-    cached = None if force_refresh else _lookup_cache(place_id)
+    cache_started = time.monotonic()
+    cached = None if force_refresh else web_store.lookup_cached_summary(place_id)
+    cache_seconds = time.monotonic() - cache_started
     if cached is not None:
         web_store.complete_job(
             job_id,
@@ -100,15 +108,24 @@ def _run_pipeline(
             updated_at=cached["updated_at"],
         )
         web_store.log_usage(identity, cache_hit=True)
-        logger.info("캐시 히트로 잡 완료 (job_id=%s)", job_id)
+        logger.info(
+            "파이프라인 소요(place_id=%s, cache=%.2fs, 캐시 히트로 잡 완료)",
+            place_id,
+            cache_seconds,
+        )
         return
 
     # 3) 캐시 미스 — 신규 수집·분석
+    collect_started = time.monotonic()
     place_detail = naver_review_collector.fetch_place_detail(place_id)
     review_list = naver_review_collector.fetch_reviews(
         place_id, place_detail["business_type"], config.REVIEW_FETCH_LIMIT
     )
+    collect_seconds = time.monotonic() - collect_started
+
+    llm_started = time.monotonic()
     summary_json = review_analyst.analyze_reviews(place_detail, review_list)
+    llm_seconds = time.monotonic() - llm_started
 
     # 분석 실패·킬스위치·리뷰 없음 → 잡 실패 기록 + 사용량은 미스로 기록 후 종료.
     if summary_json is None:
@@ -121,6 +138,7 @@ def _run_pipeline(
     place_name = place_detail["name"]
     address = place_detail["address"]
     review_count = len(review_list)
+    save_started = time.monotonic()
     updated_at = web_store.save_web_summary(
         place_id, place_name, address, summary_json, review_count
     )
@@ -134,41 +152,15 @@ def _run_pipeline(
         updated_at=updated_at,
     )
     web_store.log_usage(identity, cache_hit=False)
-    logger.info("신규 분석으로 잡 완료 (job_id=%s, 리뷰 %d건)", job_id, review_count)
-
-
-def _lookup_cache(place_id: str) -> dict | None:
-    """web 캐시 → prod 캐시 순으로 조회한다.
-
-    web 히트: 그대로 사용. prod 히트: web 캐시에도 저장(워밍)한다. 둘 다 미스면 None.
-    반환 dict는 summary_json/place_name/address/review_count 키로 정규화된다.
-    """
-    web_item = web_store.get_web_cached_summary(place_id)
-    if web_item:
-        return _normalize_cache_item(web_item)
-
-    prod_item = web_store.get_prod_cached_summary(place_id)
-    if prod_item:
-        normalized = _normalize_cache_item(prod_item)
-        # prod 히트를 web 캐시로 워밍한다(다음 조회부터 web 캐시가 응답).
-        web_store.save_web_summary(
-            place_id,
-            normalized["place_name"],
-            normalized["address"],
-            normalized["summary_json"],
-            normalized["review_count"],
-        )
-        return normalized
-
-    return None
-
-
-def _normalize_cache_item(item: dict) -> dict:
-    """캐시 항목에서 잡 완료에 필요한 필드를 추출한다(Decimal review_count는 int로)."""
-    return {
-        "summary_json": item.get("summary_json", ""),
-        "place_name": item.get("place_name", ""),
-        "address": item.get("address", ""),
-        "review_count": int(item.get("review_count", 0)),
-        "updated_at": item.get("updated_at", ""),
-    }
+    save_seconds = time.monotonic() - save_started
+    # 단계별 소요를 한 줄로 기록한다(PII 금지 — place_id·소요 시간만).
+    logger.info(
+        "파이프라인 소요(place_id=%s, cache=%.2fs, collect=%.2fs, llm=%.2fs, "
+        "save=%.2fs, 리뷰 %d건)",
+        place_id,
+        cache_seconds,
+        collect_seconds,
+        llm_seconds,
+        save_seconds,
+        review_count,
+    )
