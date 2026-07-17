@@ -139,3 +139,31 @@ Webhook payload → Worker 전달 이벤트: `{"chat_id": int, "action": "analyz
 Telegram 미사용 지인용 웹 진입점을 **별도 격리 스택**(`naver-review-web`) + Vercel 정적 PWA로 추가했다. 핵심: 초대코드→HMAC 세션, 비동기 잡+폴링(API GW 30초 타임아웃 회피), Telegram 캐시 읽기전용 read-through, 관리자 사용량 통계(누적+일별). 본 PRD의 §4 JSON 계약·§5 리뷰 dict 계약을 그대로 재사용하며 렌더만 카드 UI로 대체한다.
 
 - 설계 결정·근거: `docs/web-design.md` / 코드·인프라: `ARCHITECTURE.md` / 배포: `docs/setup-guide.md` §8
+
+### 10-1. 장소 텍스트 검색 (URL 없이 — 2026-07-17 라이브)
+
+URL을 모르는 사용자를 위해 자연어 프롬프트로 장소를 찾아 분석까지 잇는 진입 경로. LLM은 **검색어 정규화만** 담당하고 후보 리스트는 네이버 검색 결과만 사용한다(환각 0). 상세 설계 근거는 `docs/web-design.md` 결정 6.
+
+**사용자 흐름**: 프롬프트 입력("강남 데이트 양식집") → `/search`가 정규화 검색어 + 후보 리스트 반환 → 사용자가 후보 카드 클릭 → 해당 `place_id`로 `/analyze` 직행 → 기존 요약 카드 렌더(URL 붙여넣기 경로와 동일 파이프라인).
+
+**`POST /search`** (Bearer 세션 필요, WebApiFunction 동기 처리 — 잡+폴링 아님)
+
+요청:
+```json
+{ "prompt": "강남 데이트 양식집" }
+```
+응답 (200):
+```json
+{
+  "keyword": "강남 양식",
+  "places": [
+    {"place_id": "1234567", "name": "...", "category": "양식", "road_address": "서울 강남구 ...", "review_count": 128}
+  ]
+}
+```
+- `keyword`: LLM이 정규화한 검색어(정규화 실패 시 원문 폴백). `places`: 최대 10개, 0건이면 빈 배열. `review_count`는 `int` 또는 `null`.
+- 오류: 401(세션 무효)·400(prompt 누락/빈값)·502(네이버 검색 실패).
+- LLM 정규화는 모델 `claude-haiku-4-5`, timeout 5초·재시도 0, 어떤 실패에도 원문 폴백(개선 수단이지 필수 경로 아님). 킬 스위치 `SEARCH_LLM_ENABLED` off여도 원문 키워드로 검색은 동작.
+- 검색 실측(엔드포인트·coords 필수·자연어 소화 한계)의 원천은 `experiments/findings.md` §6.
+
+**`POST /analyze` 확장**: 기존 `naver_url` **또는** `place_id`(정규식 `^\d+$`) 중 하나를 받는다(둘 다 오면 `place_id` 우선). `place_id` 수신 시 Worker 이벤트 계약에 `place_id`가 실려 `resolve_place`(naver.me 해석)를 생략하고, 이후 캐시·수집·분석은 URL 경로와 동일하다.

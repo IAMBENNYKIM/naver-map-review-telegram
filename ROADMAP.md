@@ -79,13 +79,20 @@
   - 검증(Advisor 직접): `pytest tests/` 160 passed, `npm run build`·`lint` 그린, diff·계약(`daily`) 대조 완료.
   - **배포 완료(2026-07-07)**: 백엔드 `naver-review-web` 재배포 — 파라미터 7개 현행값 그대로 명시(CORS 축소값·예산 유지), 변경은 `WebApiFunction`·`WebWorkerFunction` 코드에만 국한(테이블·IAM·API GW 무변경), Telegram 스택 무영향(격리 유지). 배포 함수 invoke 스모크 정상(무인증 401). 프론트 `main` ff 병합·push(`dd5e8da..b971ad4`)로 Vercel 자동 배포. **잔여: 사용자 프로덕션 E2E 확인.**
 
+- [x] 5-8 (A/D) 장소 텍스트 검색 (URL 없이, 2026-07-17):
+  - **기능**: 자연어 프롬프트 → LLM 검색어 정규화 → 네이버 instant-search 후보 리스트 → 후보 클릭 시 `place_id` 직행 분석. LLM은 검색어 변환만 담당, 후보는 네이버 결과만 사용(환각 0).
+  - **백엔드**: `POST /search` 신설(WebApiFunction 동기 처리, `{prompt}`→`{keyword, places[]}`), `POST /analyze`가 `naver_url` **또는** `place_id`(`^\d+$`, 우선) 수용 + Worker 이벤트에 `place_id`(수신 시 `resolve_place` 생략). 신규 `search_normalizer.normalize_search_query`(모델 `claude-haiku-4-5`, timeout 5초·재시도 0·전 실패 원문 폴백), `naver_review_collector.search_places(keyword, limit=10)`(instant-search, coords 필수 — findings §6). config 상수 `SEARCH_LLM_MODEL`/`SEARCH_LLM_MAX_TOKENS`(100)/`SEARCH_LLM_ENABLED`.
+  - **통계**: `web_usage`에 `search_count` 누적 + `search#YYYY-MM-DD` 일별 카운터(스키마리스 ADD), `/admin/stats`에 `search_count`·`daily[].search` 노출.
+  - **인프라**: WebApiFunction `/search` 라우트·`SEARCH_LLM_ENABLED` 환경변수·usage `UpdateItem` IAM·Timeout 10→20초, `web_jobs` `place_id` 속성, 템플릿 파라미터 `SearchLlmEnabled`(테이블·IAM 최소 변경, 격리 유지).
+  - **프론트**: 첫 화면 탭 구조(검색 기본 / 붙여넣기 보조, `?prefill=`은 붙여넣기 탭 활성), `useAnalysis` 훅으로 분석·폴링 공유, `SearchView` 후보 클릭→place_id 분석, 관리자 테이블 검색 횟수 컬럼.
+  - 관련 커밋 `d9bca7a`·`da0f378`·`579abb3`·`1ef05cc`. 프로덕션 live 실측 통과. 설계 근거·거부 대안은 `docs/web-design.md` 결정 6, 검색 실측은 `experiments/findings.md` §6.
+
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
 - per-identity 일일 쿼터 (Phase 6 — 웹 확산 시. 5-1 사용량 카운터 재사용)
 - 카카오 소셜 로그인 전환 / 카카오 채널·알림톡
 - 카카오 SDK 리치 공유(피드 템플릿) — 카카오 개발자 앱 등록·JS키·도메인 등록 필요 (현재는 Web Share API로 대체)
 
-- 장소명 텍스트 검색 (URL 없이)
 - 개인 리뷰 기록/조회 (/review, /review_update — UC-3)
 - 블로그 리뷰 수집 확대
 - 캐시 자동 만료(TTL) 재검토
