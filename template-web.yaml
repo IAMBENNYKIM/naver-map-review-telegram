@@ -25,10 +25,11 @@ Parameters:
       이 스택은 이 테이블을 정의하지 않는다 — Telegram 스택이 소유한다.
   AllowedOrigin:
     Type: String
-    Default: "*"
+    Default: "https://benny-naver-review.vercel.app"
     Description: >
-      CORS 허용 오리진. MVP 기본은 전체(*)이나,
-      배포 시 Vercel 프론트엔드 도메인으로 반드시 좁혀라.
+      CORS 허용 오리진. 기본값을 Vercel 프론트엔드 도메인으로 고정한다 —
+      배포 시 --parameter-overrides에서 이 값을 누락해도 안전한 값으로 원복되도록
+      (파라미터 원복 함정 방어). 다른 프론트로 옮기면 이 기본값을 갱신한다.
   BudgetLimitAmount:
     Type: Number
     Default: 30
@@ -70,6 +71,11 @@ Resources:
   WebHttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
+      # 계정 남용 방어용 기본 스로틀 — 모든 라우트에 적용(전역 상한, 개인용 서비스에 넉넉).
+      # burst=순간 허용 버스트, rate=초당 정상 처리율. HttpApi(ApiGatewayV2) RouteSettings 매핑.
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 10
+        ThrottlingRateLimit: 5
       CorsConfiguration:
         AllowOrigins:
           - !Ref AllowedOrigin
@@ -169,6 +175,8 @@ Resources:
               Effect: Allow
               Action:
                 - dynamodb:UpdateItem
+                # /analyze 의 일일 LLM 상한 검사(get_daily_llm_count)가 GetItem으로 오늘 카운터를 읽는다.
+                - dynamodb:GetItem
               Resource:
                 # /search 의 log_search_usage · 캐시 히트 직결의 log_usage 가 사용량을 누적 기록한다.
                 - !GetAtt WebUsageTable.Arn
