@@ -91,7 +91,8 @@ Resources:
       Handler: web_api_handler.lambda_handler
       CodeUri: src/
       MemorySize: 256
-      Timeout: 10
+      # /search의 LLM 정규화(timeout 5초)+네이버 검색 동기 처리 여유. API GW 29초 제한 내.
+      Timeout: 20
       Description: 초대·세션 발급 / 잡 생성 + 비동기 invoke / 결과 폴링 / 관리자 통계
       Environment:
         Variables:

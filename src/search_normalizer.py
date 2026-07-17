@@ -67,7 +67,11 @@ def _call_claude(prompt: str) -> str:
     """anthropic SDK로 검색어 정규화를 수행한다(lazy import — config 패턴)."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    # Lambda 10초(→20초) 제한 안에서 실패 시 원문 폴백이 설계이므로 유계로 짧게 자른다.
+    # anthropic 기본값(timeout 10분·재시도 2회)이면 핸들러 타임아웃을 넘겨 API GW 500.
+    client = anthropic.Anthropic(
+        api_key=config.ANTHROPIC_API_KEY, timeout=5.0, max_retries=0
+    )
     response = client.messages.create(
         model=config.SEARCH_LLM_MODEL,
         max_tokens=config.SEARCH_LLM_MAX_TOKENS,

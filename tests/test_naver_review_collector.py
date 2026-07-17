@@ -362,11 +362,44 @@ class TestSearchPlaces:
             # instant-search 엔드포인트로만 요청되는지 확인 + Referer 헤더 존재 확인
             assert "map.naver.com/p/api/search/instant-search" in str(request.url)
             assert request.headers.get("Referer") == "https://map.naver.com/"
+            # coords 파라미터가 반드시 포함돼야 한다 (생략 시 HTTP 500 — findings.md §6-1)
+            assert request.url.params.get("coords") == "37.4979,127.0276"
             return httpx.Response(
                 200, json=response_json, headers={"Content-Type": "application/json"}
             )
 
         return handler
+
+    def test_coords_파라미터를_함께_보낸다(self, install_transport):
+        captured: list = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(200, json=_INSTANT_SEARCH_RESPONSE)
+
+        install_transport(handler)
+
+        naver_review_collector.search_places("강남 양식")
+
+        assert captured[0].url.params.get("query") == "강남 양식"
+        assert captured[0].url.params.get("coords") == "37.4979,127.0276"
+
+    def test_HTTP_오류_메시지에_keyword가_없다(self, install_transport):
+        # coords 생략 시 재현되던 HTTP 500 등 — 예외 메시지에 URL·keyword가 새면 안 된다.
+        secret_keyword = "강남비밀검색어"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="internal error")
+
+        install_transport(handler)
+
+        with pytest.raises(naver_review_collector.ReviewCollectError) as excinfo:
+            naver_review_collector.search_places(secret_keyword)
+
+        message = str(excinfo.value)
+        assert "500" in message  # 상태코드는 남긴다
+        assert secret_keyword not in message  # keyword는 새지 않는다
+        assert "instant-search" not in message  # URL도 새지 않는다
 
     def test_place_배열을_계약_dict로_매핑한다(self, install_transport):
         install_transport(self._handler(_INSTANT_SEARCH_RESPONSE))

@@ -35,6 +35,20 @@ class TestNormalizeSearchQuery:
 
         assert result == "강남 양식"
 
+    def test_클라이언트를_유계로_생성한다(self):
+        # Lambda 타임아웃 초과 방지 — timeout·max_retries를 짧게 자른다.
+        fake_response = MagicMock()
+        fake_response.content = [_fake_text_block("강남 양식")]
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = fake_response
+
+        with patch("anthropic.Anthropic", return_value=fake_client) as mock_ctor:
+            search_normalizer.normalize_search_query("강남 데이트 양식집")
+
+        ctor_kwargs = mock_ctor.call_args.kwargs
+        assert ctor_kwargs["timeout"] == 5.0
+        assert ctor_kwargs["max_retries"] == 0
+
     def test_킬스위치_off면_원문을_반환한다(self, monkeypatch):
         monkeypatch.setattr(config, "SEARCH_LLM_ENABLED", False)
 

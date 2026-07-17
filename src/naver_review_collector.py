@@ -34,9 +34,11 @@ _MOBILE_PLACE_URL_TEMPLATE = "https://m.place.naver.com/place/{place_id}/review/
 _GRAPHQL_ENDPOINT = "https://pcmap-api.place.naver.com/graphql"
 
 # 장소 텍스트 검색(instant-search) 엔드포인트 (findings.md §6-1 실측 확정)
-# query 파라미터만 사용한다(coords 미사용 — 지역명이 query에 포함되는 전제).
 # Referer 필수(없으면 403) — config.NAVER_REQUEST_HEADERS가 이미 포함한다.
 _INSTANT_SEARCH_ENDPOINT = "https://map.naver.com/p/api/search/instant-search"
+# 검색 요청 고정 좌표(강남역 근방 lat,lng) — 근접도 정렬 기준일 뿐이나
+# coords 생략 시 HTTP 500 (2026-07-17 실측). 지역명이 query에 포함되는 전제라 고정값 사용.
+_SEARCH_DEFAULT_COORDS = "37.4979,127.0276"
 
 # 실측 검증된 쿼리 원문 (실서비스 파라미터 원형 — 임의 확장 금지)
 _VISITOR_REVIEWS_QUERY = (
@@ -209,9 +211,10 @@ def fetch_reviews(
 def search_places(keyword: str, limit: int = 10) -> list[dict]:
     """검색어로 네이버 지도 장소 후보 리스트를 조회한다 (findings.md §6 실측 확정).
 
-    instant-search 엔드포인트에 query 파라미터만 보낸다(coords 미사용 — 지역명이
-    keyword에 포함되는 전제). 응답 루트 dict의 ``place[]`` 배열에서 후보를 추출한다.
-    ``place`` 키 부재·null이면 빈 리스트를 반환하며, limit 개수로 절단한다.
+    instant-search 엔드포인트에 query·coords 파라미터를 보낸다(coords 생략 시 HTTP 500 —
+    지역명이 keyword에 포함되는 전제라 고정 좌표 사용). 응답 루트 dict의 ``place[]``
+    배열에서 후보를 추출한다. ``place`` 키 부재·null이면 빈 리스트를 반환하며,
+    limit 개수로 절단한다.
 
     Returns:
         후보 dict 리스트 (웹 /search API 계약):
@@ -223,12 +226,17 @@ def search_places(keyword: str, limit: int = 10) -> list[dict]:
 
     Raises:
         ReviewCollectError: 네트워크 오류·429·4xx/5xx 응답 시 (기존 규약 준수).
+            PII 보호: HTTP 오류 메시지에는 URL·keyword를 포함하지 않고 상태코드만 남긴다.
     """
     response = _http_get(
-        f"{_INSTANT_SEARCH_ENDPOINT}?query={quote(keyword)}",
+        f"{_INSTANT_SEARCH_ENDPOINT}?query={quote(keyword)}"
+        f"&coords={quote(_SEARCH_DEFAULT_COORDS)}",
         context="장소 검색",
     )
-    _raise_for_http_status(response, context="장소 검색")
+    # 상태 오류 메시지에 URL(=인코딩된 keyword)이 새지 않도록 상태코드만 남긴다
+    # (_raise_for_http_status는 error 문자열에 URL을 담으므로 search 경로에서는 미사용).
+    if response.status_code >= 400:
+        raise ReviewCollectError(f"장소 검색 HTTP {response.status_code} 응답")
 
     try:
         payload = response.json()

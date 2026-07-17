@@ -88,7 +88,7 @@ HTML Apollo state (근거: `dumps/step3_apollo.json`, `dumps/step4_fields.txt`):
 GET https://map.naver.com/p/api/search/instant-search?query={검색어}&coords={lat,lng}
 ```
 
-- **필수 파라미터**: `query` (검색어). `coords`("37.4979,127.0276" = lat,lng)는 선택 — 근접도(`dist`)·정렬 기준일 뿐 없어도 200. 지역명이 query에 포함되면 영향 작음.
+- **필수 파라미터**: `query` (검색어) + `coords`("37.4979,127.0276" = lat,lng). ⚠️ **정정(2026-07-17)**: `coords`는 **사실상 필수** — 생략 시 쿼리·인코딩과 무관하게 **HTTP 500** (프로덕션 이식 중 로컬·Lambda 동일 재현). 2026-07-16 "선택 — 없어도 200" 기록은 **오판**이었다(당시 탐사 스크립트 `step7_place_search.py`가 항상 coords를 함께 보냈던 탓). coords 값은 근접도(`dist`)·정렬 기준일 뿐이라 지역명이 query에 포함되면 결과 자체엔 영향이 작으므로, 고정 좌표(강남역 근방)를 상수로 붙인다.
 - **필수 헤더**: `Referer: https://map.naver.com/` — **없으면 403 Forbidden (nginx)** (근거: 실측, no-referer 요청이 403 text/html 548바이트 반환). §1~5의 pcmap-api GraphQL은 Referer 선택이었으나 **instant-search는 Referer 필수**로 정책이 다르다. `Accept-Language`도 유지.
 - **User-Agent**: 데스크톱/모바일 **둘 다 200 허용** (근거: 데스크톱 UA로 `돈멜` 조회 시 200 + place 6건 + first id 33099281). m.place.naver.com(§1 데스크톱 UA 429 차단)과 정책이 다르다. 단 프로젝트 일관성상 `config.NAVER_REQUEST_HEADERS`(모바일 UA) 재사용 권장.
 - 응답 최대 후보 수: place 섹션 6~10건 (autocomplete 성격 — 페이지네이션 없음). 후보 브라우징엔 충분.
@@ -126,6 +126,7 @@ GET https://map.naver.com/p/api/search/instant-search?query={검색어}&coords={
 1. **allSearch 엔드포인트 `GET https://map.naver.com/p/api/search/allSearch?query=...&type=all`** — 정상 질의(`강남 양식`)에도 `result.place: null` + `result.metaInfo.pageId: "ncaptcha-all-search-no-result"` + `ncaptcha`(`confirmRules: "CE_EMPTY_TOKEN"`) 반환. 별도 captcha/토큰을 요구해 **httpx 단독 불가**. captcha 유발 방지 위해 더 밀지 않음 (근거: `dumps/step7_allsearch_gangnam.json`, `dumps/step7_allsearch_nl.json`). → **instant-search로 충분하므로 allSearch 불필요.**
 2. **Referer 생략** → 403 Forbidden. instant-search엔 Referer 필수.
 3. 자연어 다중개념 질의 → 빈 결과 (위 6-3). 엔드포인트 문제 아님, 질의 형태 문제 → LLM 정규화로 해결.
+4. **`coords` 생략 → HTTP 500** (2026-07-17 실측, 로컬·Lambda 동일). 6-1 정정 참조 — 반드시 coords를 함께 보낸다.
 
 ### 6-5. rate limit 실측
 
