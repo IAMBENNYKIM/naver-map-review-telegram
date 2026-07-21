@@ -89,6 +89,7 @@
 | GraphQL 인트로스펙션 | 즉시 429 + 지속 차단 → 절대 금지 | findings.md §4 |
 | cp949 pip 실패 | `requirements.txt` 비ASCII 주석 → `sam build` 실패 → ASCII 유지 | 제약 20 |
 | PowerShell `curl` | `Invoke-WebRequest` 별칭이라 `-H`/`-d` 불가 → `curl.exe` 또는 `Invoke-RestMethod` | setup-guide 문제해결 |
+| Git Bash `sam.cmd` 인자 깨짐 | `--parameter-overrides` 특수문자·공백 재해석 → `'C:\Program'` 오류 → `powershell.exe -NoProfile` 경유 | setup-guide §8-2 |
 | 콘솔 cp949 크래시 | 한국어·특수문자 print 시 UnicodeEncodeError → `PYTHONUTF8=1` 설정 | — |
 | Vercel 브랜치 | Production Branch=main — feature push는 Preview만 생성 → `main` 병합해야 프로덕션 반영 | setup-guide §8-3 |
 

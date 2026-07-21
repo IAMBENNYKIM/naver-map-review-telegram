@@ -167,8 +167,13 @@ aws cloudformation describe-stacks --stack-name naver-review-web --profile naver
 # 2) build 후 조회한 값 전량 명시 + 비대화식(--no-confirm-changeset)
 sam build -t template-web.yaml
 sam deploy --stack-name naver-review-web --profile naver-review --region ap-northeast-2 --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset \
-  --parameter-overrides "SecretsName=naver-review/web TablePrefix=prod_ ProdReviewCacheTable=prod_review_cache AllowedOrigin=https://benny-naver-review.vercel.app BudgetLimitAmount=30 BudgetNotificationEmail=본인이메일 LlmCommentaryEnabled=true SearchLlmEnabled=true"
+  --parameter-overrides "SecretsName=naver-review/web TablePrefix=prod_ ProdReviewCacheTable=prod_review_cache AllowedOrigin=https://benny-naver-review.vercel.app BudgetLimitAmount=30 BudgetNotificationEmail=본인이메일 LlmCommentaryEnabled=true SearchLlmEnabled=true WebDailyLlmLimit=100"
 ```
+
+> ⚠️ **Git Bash에서 `sam` 직접 호출 금지 — `sam.cmd` 배치 래퍼가 인자를 재해석한다** (2026-07-21 실사고). Git Bash 도구로 위 `sam deploy`를 직접 실행하면 `sam.cmd` 배치 래퍼가 `--parameter-overrides`의 값(URL·이메일 등 특수문자·공백 포함)을 재파싱하다가 `'C:\Program'은(는) 내부 또는 외부 명령이 아닙니다`로 실패한다(경로 `C:\Program Files\...`가 공백에서 쪼개짐). 처방: PowerShell을 경유해 실행한다.
+> ```bash
+> powershell.exe -NoProfile -Command "sam deploy --stack-name naver-review-web --profile naver-review --region ap-northeast-2 --capabilities CAPABILITY_IAM --resolve-s3 --no-confirm-changeset --parameter-overrides 'SecretsName=naver-review/web TablePrefix=prod_ ProdReviewCacheTable=prod_review_cache AllowedOrigin=https://benny-naver-review.vercel.app BudgetLimitAmount=30 BudgetNotificationEmail=본인이메일 LlmCommentaryEnabled=true SearchLlmEnabled=true WebDailyLlmLimit=100'"
+> ```
 
 배포 후 **변경 범위 확인**(코드만이어야 함): `aws cloudformation describe-stack-events --stack-name naver-review-web ... --max-items 12` → `WebApiFunction`·`WebWorkerFunction`만 UPDATE, 테이블·API GW·IAM 무변경, Telegram 스택(`naver-map-review-telegram`)은 `LastUpdatedTime` 불변인지 대조. **스모크**: sandbox가 `curl`을 막으면 `aws lambda invoke`로 대체 — 무인증 `/admin/stats` 이벤트를 던져 `statusCode 401`이 오면 새 코드가 ImportError 없이 기동한 것.
 
@@ -201,6 +206,7 @@ sam deploy --stack-name naver-review-web --profile naver-review --region ap-nort
 | 웹 배포 `Unzipped size must be smaller than 262144000` | `CodeUri`가 `.venv`·`web-frontend/node_modules`·`.git`를 포함. 배포 Python은 `src/`에 있어야 하고 두 템플릿 `CodeUri: src/`인지 확인(sam build는 .gitignore 무시) |
 | 웹 배포가 Telegram 스택을 건드림 | `--stack-name naver-review-web` 누락(samconfig가 Telegram stack_name 사용). 8-2 함정 2·3 참조 |
 | 웹 배포 후 함수 ImportError(httpx 등) | `sam deploy`에 `-t`를 붙여 소스를 배포함. build 후 `-t` 없이 배포(8-2 함정 1) |
+| Git Bash에서 `sam` 실행 시 `'C:\Program'은(는) 내부 또는 외부 명령이 아닙니다` | `sam.cmd` 배치 래퍼가 `--parameter-overrides`의 특수문자·공백 인자를 재해석해 실패 → `powershell.exe -NoProfile -Command "sam deploy ..."` 경유 실행(8-2) |
 | PowerShell `curl` 파라미터 바인딩 에러 | `curl`은 `Invoke-WebRequest` 별칭 — `curl.exe` 또는 `Invoke-RestMethod` 사용 |
 | 웹 "API 서버 주소가 설정되지 않았어요" | Vercel env `NEXT_PUBLIC_API_BASE_URL` 미설정 — Settings → Environment Variables 추가 후 Redeploy |
 | 웹 "서버에 연결하지 못했어요"(CORS) | 백엔드 `AllowedOrigin`이 프론트 도메인을 허용하는지(기본 `*`는 허용). 좁힌 뒤 도메인 오타 확인 |
