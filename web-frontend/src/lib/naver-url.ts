@@ -2,22 +2,45 @@
  * 공유(share_target)로 넘어온 임의의 텍스트에서 네이버 지도 URL 을 추출한다.
  *
  * 네이버 앱의 "공유"는 URL 을 text 필드에 문장과 함께 담아 보내는 경우가 많아,
- * 정규식으로 첫 번째 네이버 링크만 골라낸다.
+ * 정규식으로 네이버 링크를 골라낸다. 붙여넣기 화면은 여러 링크를 한 번에
+ * 받을 수 있으므로 전체 매칭(extractNaverUrls)과 첫 링크(extractNaverUrl)를 모두 제공한다.
  */
 
-const NAVER_URL_PATTERN = /https?:\/\/[^\s]*naver\.[^\s]+/i;
+const NAVER_URL_PATTERN = /https?:\/\/[^\s]*naver\.[^\s]+/gi;
+
+/** 매칭한 URL 끝에 붙는 마침표/괄호 등 후행 문장부호를 정리한다. */
+function trimTrailingPunctuation(url: string): string {
+  return url.replace(/[).,]+$/, "");
+}
+
+/**
+ * 텍스트에서 네이버 URL 을 모두 뽑아낸다.
+ * 후행 문장부호를 정리하고, 중복은 제거하되 등장 순서는 보존한다.
+ * 개수 상한 절단은 하지 않는다(호출부 책임).
+ */
+export function extractNaverUrls(text: string): string[] {
+  const matches = text.match(NAVER_URL_PATTERN);
+  if (!matches) {
+    return [];
+  }
+  const seenUrls = new Set<string>();
+  const uniqueUrls: string[] = [];
+  for (const match of matches) {
+    const cleanedUrl = trimTrailingPunctuation(match);
+    if (!seenUrls.has(cleanedUrl)) {
+      seenUrls.add(cleanedUrl);
+      uniqueUrls.push(cleanedUrl);
+    }
+  }
+  return uniqueUrls;
+}
 
 /** 텍스트에서 첫 번째 네이버 URL 을 뽑아낸다. 없으면 null. */
 export function extractNaverUrl(text: string | null | undefined): string | null {
   if (!text) {
     return null;
   }
-  const match = text.match(NAVER_URL_PATTERN);
-  if (!match) {
-    return null;
-  }
-  // 문장 끝에 붙는 마침표/괄호 등 후행 문장부호를 정리한다.
-  return match[0].replace(/[).,]+$/, "");
+  return extractNaverUrls(text)[0] ?? null;
 }
 
 /** 입력값에 naver.me 또는 naver 도메인이 포함되는지 가볍게 검증한다. */
