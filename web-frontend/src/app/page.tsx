@@ -69,6 +69,7 @@ function HomeContent() {
         <Button
           variant="ghost"
           size="sm"
+          className="shrink-0"
           onClick={handleLogout}
           aria-label="로그아웃"
         >
@@ -87,21 +88,21 @@ function HomeContent() {
           isActive={activeTab === "search"}
           onClick={() => setActiveTab("search")}
         >
-          <Sparkles className="h-4 w-4" aria-hidden="true" />
+          <Sparkles className="h-4 w-4 max-[430px]:hidden" aria-hidden="true" />
           검색
         </TabButton>
         <TabButton
           isActive={activeTab === "paste"}
           onClick={() => setActiveTab("paste")}
         >
-          <Link2 className="h-4 w-4" aria-hidden="true" />
+          <Link2 className="h-4 w-4 max-[430px]:hidden" aria-hidden="true" />
           링크 붙여넣기
         </TabButton>
         <TabButton
           isActive={activeTab === "history"}
           onClick={() => setActiveTab("history")}
         >
-          <Bookmark className="h-4 w-4" aria-hidden="true" />
+          <Bookmark className="h-4 w-4 max-[430px]:hidden" aria-hidden="true" />
           보관함
         </TabButton>
       </div>
@@ -143,7 +144,7 @@ function TabButton({ isActive, onClick, children }: TabButtonProps) {
       aria-selected={isActive}
       onClick={onClick}
       className={cn(
-        "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        "flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-2 text-sm font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
         isActive
           ? "bg-accent text-white"
