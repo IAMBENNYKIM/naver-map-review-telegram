@@ -17,7 +17,7 @@ export interface RangeSum {
 }
 
 /** 차트 지표 종류. */
-export type UsageMetric = "total" | "llm";
+export type UsageMetric = "total" | "llm" | "search";
 
 /**
  * recharts 데이터 레코드의 시리즈 키를 만든다.
@@ -86,7 +86,7 @@ export interface ChartSeries {
 
 /**
  * 선택 구간(미선택 시 존재하는 모든 날짜)의 정렬된 일자 축을 만들고,
- * 각 일자 레코드에 사용자별 total·llm 값을 채운다.
+ * 각 일자 레코드에 사용자별 total·llm·search 값을 채운다.
  * 값이 없는 (사용자, 날짜) 조합은 0 으로 둔다.
  */
 export function buildChartSeries(
@@ -133,6 +133,7 @@ export function buildChartSeries(
       const entry = lookupByIdentity.get(identity)?.get(date);
       record[seriesKey(identity, "total")] = entry ? entry.total : 0;
       record[seriesKey(identity, "llm")] = entry ? entry.llm : 0;
+      record[seriesKey(identity, "search")] = entry ? entry.search : 0;
     }
     return record;
   });

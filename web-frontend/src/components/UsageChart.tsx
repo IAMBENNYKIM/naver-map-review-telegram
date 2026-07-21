@@ -14,8 +14,8 @@ import {
 
 import { seriesKey, type UsageMetric } from "@/lib/usage-stats";
 
-/** 지표 표시 모드: 총요청만 / LLM만 / 둘 다. */
-export type MetricMode = "both" | "total" | "llm";
+/** 지표 표시 모드: 전체 / 총요청만 / LLM만 / 검색만. */
+export type MetricMode = "all" | "total" | "llm" | "search";
 
 interface UsageChartProps {
   /** buildChartSeries 로 만든 일자별 레코드 배열. */
@@ -34,11 +34,13 @@ function colorForIndex(index: number): string {
 const METRIC_LABEL: Record<UsageMetric, string> = {
   total: "총요청",
   llm: "LLM",
+  search: "검색",
 };
 
 /**
  * 사용량 꺾은선 그래프.
- * 사용자별 1선(총요청=실선, LLM=점선). 지표 모드에 따라 선 구성이 달라진다.
+ * 사용자별 지표선(총요청=실선, LLM=긴 점선, 검색=짧은 점선). 같은 사용자는 같은 색으로
+ * 묶고 대시 패턴으로 지표를 구분한다. 지표 모드에 따라 선 구성이 달라진다.
  * 축·격자·툴팁 색은 테마 토큰(CSS 변수)을 사용해 다크/라이트 모두 읽히게 한다.
  */
 export function UsageChart({ data, identities, metricMode }: UsageChartProps) {
@@ -50,8 +52,9 @@ export function UsageChart({ data, identities, metricMode }: UsageChartProps) {
     );
   }
 
-  const showTotal = metricMode !== "llm";
-  const showLlm = metricMode !== "total";
+  const showTotal = metricMode === "all" || metricMode === "total";
+  const showLlm = metricMode === "all" || metricMode === "llm";
+  const showSearch = metricMode === "all" || metricMode === "search";
 
   // 날짜 수가 많으면 가로로 넓혀 스크롤되게 한다.
   const minWidth = Math.max(480, data.length * 44);
@@ -109,6 +112,18 @@ export function UsageChart({ data, identities, metricMode }: UsageChartProps) {
                       stroke={color}
                       strokeWidth={2}
                       strokeDasharray="5 4"
+                      dot={false}
+                      connectNulls
+                    />
+                  ) : null}
+                  {showSearch ? (
+                    <Line
+                      type="monotone"
+                      dataKey={seriesKey(identity, "search")}
+                      name={`${identity} · ${METRIC_LABEL.search}`}
+                      stroke={color}
+                      strokeWidth={2}
+                      strokeDasharray="1 4"
                       dot={false}
                       connectNulls
                     />

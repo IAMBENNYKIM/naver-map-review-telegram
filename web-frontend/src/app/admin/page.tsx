@@ -36,9 +36,10 @@ interface DisplayRow {
 }
 
 const METRIC_OPTIONS: Array<{ value: MetricMode; label: string }> = [
-  { value: "both", label: "둘 다" },
+  { value: "all", label: "전체" },
   { value: "total", label: "총요청" },
   { value: "llm", label: "LLM 호출" },
+  { value: "search", label: "검색" },
 ];
 
 /** 관리자 사용량 통계 페이지. 토큰은 메모리에만 보관한다(영구 저장 지양). */
@@ -51,7 +52,7 @@ export default function AdminPage() {
   // 구간 선택 상태 (빈 문자열 = 미선택 = 무제한).
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [metricMode, setMetricMode] = useState<MetricMode>("both");
+  const [metricMode, setMetricMode] = useState<MetricMode>("all");
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -93,7 +94,7 @@ export default function AdminPage() {
     setErrorText(null);
     setStartDate("");
     setEndDate("");
-    setMetricMode("both");
+    setMetricMode("all");
     setPhase("idle");
   }
 
@@ -135,8 +136,9 @@ export default function AdminPage() {
     [rows, rangeStart, rangeEnd],
   );
 
-  const showTotalColumn = metricMode !== "llm";
-  const showLlmColumn = metricMode !== "total";
+  const showTotalColumn = metricMode === "all" || metricMode === "total";
+  const showLlmColumn = metricMode === "all" || metricMode === "llm";
+  const showSearchColumn = metricMode === "all" || metricMode === "search";
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 px-4 py-8">
@@ -303,9 +305,11 @@ export default function AdminPage() {
                             LLM 호출
                           </th>
                         ) : null}
-                        <th className="px-4 py-3 text-right font-medium">
-                          검색
-                        </th>
+                        {showSearchColumn ? (
+                          <th className="px-4 py-3 text-right font-medium">
+                            검색
+                          </th>
+                        ) : null}
                         <th className="px-4 py-3 font-medium">최근 사용</th>
                       </tr>
                     </thead>
@@ -328,9 +332,11 @@ export default function AdminPage() {
                               {row.llm}
                             </td>
                           ) : null}
-                          <td className="px-4 py-3 text-right tabular-nums">
-                            {row.search}
-                          </td>
+                          {showSearchColumn ? (
+                            <td className="px-4 py-3 text-right tabular-nums">
+                              {row.search}
+                            </td>
+                          ) : null}
                           <td className="px-4 py-3 text-muted">
                             {row.lastUsedAt}
                           </td>
