@@ -20,7 +20,8 @@ const MAX_POLL_ATTEMPTS = 41;
 /** 실행 결과의 판별 유니온. 호출부가 kind로 분기해 상태를 반영한다. */
 export type RunnerOutcome =
   | { kind: "done"; result: AnalysisResult }
-  | { kind: "error"; errorText: string }
+  // status: HTTP 상태 코드(ApiError일 때만). 배치 훅이 429(일일 상한)를 구분하는 데 쓴다.
+  | { kind: "error"; errorText: string; status?: number }
   | { kind: "timeout" }
   | { kind: "unauthorized" }
   | { kind: "cancelled" };
@@ -72,6 +73,7 @@ export async function runAnalysisToCompletion(
         error instanceof ApiError
           ? error.message
           : "분석 요청에 실패했어요. 잠시 후 다시 시도해 주세요.",
+      status: error instanceof ApiError ? error.status : undefined,
     };
   }
 
@@ -107,6 +109,7 @@ export async function runAnalysisToCompletion(
           error instanceof ApiError
             ? error.message
             : "결과 조회 중 오류가 발생했어요.",
+        status: error instanceof ApiError ? error.status : undefined,
       };
     }
 

@@ -109,7 +109,7 @@ export function AnalysisStatusPanel({
             aria-hidden="true"
           />
           <span>
-            시간이 조금 오래 걸리고 있어요. 잠시 후 같은 주소로 다시 시도해 주세요.
+            시간이 조금 오래 걸리고 있어요. 잠시 후 다시 시도해 주세요.
           </span>
         </CardContent>
       </Card>
