@@ -1,7 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Search, AlertCircle, MapPin, ChevronRight, X } from "lucide-react";
+import {
+  Search,
+  AlertCircle,
+  MapPin,
+  ChevronRight,
+  ChevronDown,
+  X,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,6 +50,11 @@ function toBatchEntry(place: PlaceCandidate): BatchEntry {
   };
 }
 
+/** 완료로 간주하는 상태(재클릭 시 접기 토글 대상). useBatchAnalysis의 완료 판정과 동일 집합. */
+function isFinishedStatus(status: BatchItemState["status"]): boolean {
+  return status === "done" || status === "error" || status === "timeout";
+}
+
 /** 배치 항목 상태를 상태 패널의 phase로 매핑한다(waiting은 패널을 쓰지 않는다). */
 function toPanelPhase(status: BatchItemState["status"]): AnalysisPhase {
   switch (status) {
@@ -73,6 +85,8 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
   const [batchOffset, setBatchOffset] = useState(0);
   // 일괄 분석을 한 번이라도 시작했는지 — 버튼 문구("상위" vs "다음") 판정에 쓴다.
   const [batchStarted, setBatchStarted] = useState(false);
+  // 결과를 접은 항목의 place_id 집합. 완료 항목 재클릭 시 토글한다(목록 훑기 편의).
+  const [collapsedKeys, setCollapsedKeys] = useState<Set<string>>(new Set());
 
   const {
     items,
@@ -96,6 +110,20 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
     ? `다음 ${remainingCount}곳 분석하기`
     : `상위 ${Math.min(BATCH_SIZE, places.length)}곳 분석하기`;
 
+  /** 주어진 key들을 접힘 집합에서 제거해 결과를 다시 펼친다(분석·갱신 시 자동 펼침). */
+  function expandKeys(keysToExpand: string[]) {
+    setCollapsedKeys((previousKeys) => {
+      if (!keysToExpand.some((key) => previousKeys.has(key))) {
+        return previousKeys; // 변경 없음 — 리렌더 방지.
+      }
+      const nextKeys = new Set(previousKeys);
+      for (const key of keysToExpand) {
+        nextKeys.delete(key);
+      }
+      return nextKeys;
+    });
+  }
+
   async function handleSearch(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedPrompt = prompt.trim();
@@ -107,6 +135,7 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
     reset();
     setBatchStarted(false);
     setBatchOffset(0);
+    setCollapsedKeys(new Set()); // 접힘 상태도 초기화한다.
     setSearchPhase("searching");
     setSearchErrorText(null);
     try {
@@ -133,10 +162,24 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
       return; // 배치 진행 중에는 개별 선택을 잠근다.
     }
     const existing = itemByKey.get(place.placeId);
-    if (existing && existing.status === "done") {
-      return; // 이미 결과가 있으면 무시 — 재분석은 결과 카드의 갱신 버튼으로만.
+    if (existing && isFinishedStatus(existing.status)) {
+      // 완료 항목 재클릭 = 결과 접기/펼치기 토글(재분석하지 않는다).
+      setCollapsedKeys((previousKeys) => {
+        const nextKeys = new Set(previousKeys);
+        if (nextKeys.has(place.placeId)) {
+          nextKeys.delete(place.placeId); // 펼침.
+        } else {
+          nextKeys.add(place.placeId); // 접힘.
+        }
+        return nextKeys;
+      });
+      return;
     }
-    // 단건 클릭 = 병합 배치 1건. 일괄 분석 진척(오프셋)은 되돌리지 않는다.
+    if (existing) {
+      return; // waiting·running 항목은 무시(isRunning 잠금이 이미 커버하나 명시 유지).
+    }
+    // 미분석 항목 — 단건 클릭 = 병합 배치 1건. 일괄 분석 진척(오프셋)은 되돌리지 않는다.
+    expandKeys([place.placeId]); // 새로 분석하는 항목은 접힘을 해제한다(자동 펼침).
     startBatch([toBatchEntry(place)]);
   }
 
@@ -148,6 +191,7 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
     }
     setBatchOffset(offset);
     setBatchStarted(true);
+    expandKeys(slice.map((place) => place.placeId)); // 새로 분석하는 항목은 접힘을 해제한다.
     startBatch(slice.map(toBatchEntry));
   }
 
@@ -168,7 +212,10 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
           result={item.result}
           errorText={item.errorText}
           isRefreshing={item.isRefreshing}
-          onRefresh={() => refreshItem(item.entry.key)}
+          onRefresh={() => {
+            expandKeys([item.entry.key]); // 접힌 채 갱신은 UI상 불가하나 방어적 펼침.
+            refreshItem(item.entry.key);
+          }}
         />
       </div>
     );
@@ -276,13 +323,24 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
               {places.map((place) => {
                 const item = itemByKey.get(place.placeId);
                 const isItemRunning = item?.status === "running";
+                const isItemFinished = item
+                  ? isFinishedStatus(item.status)
+                  : false;
+                const isCollapsed = collapsedKeys.has(place.placeId);
                 return (
                   <li key={place.placeId}>
                     <button
                       type="button"
                       onClick={() => handleSelectPlace(place)}
                       disabled={isRunning}
-                      aria-label={`${place.name} 리뷰 분석하기`}
+                      aria-label={
+                        isItemFinished
+                          ? `${place.name} 분석 결과 ${
+                              isCollapsed ? "펼치기" : "접기"
+                            }`
+                          : `${place.name} 리뷰 분석하기`
+                      }
+                      aria-expanded={isItemFinished ? !isCollapsed : undefined}
                       className="flex w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-white/5"
                     >
                       <div className="min-w-0 flex-1 space-y-0.5">
@@ -310,6 +368,11 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
                       </div>
                       {isItemRunning ? (
                         <Spinner className="h-4 w-4 shrink-0 text-accent" />
+                      ) : isItemFinished && !isCollapsed ? (
+                        <ChevronDown
+                          className="h-4 w-4 shrink-0 text-muted"
+                          aria-hidden="true"
+                        />
                       ) : (
                         <ChevronRight
                           className="h-4 w-4 shrink-0 text-muted"
@@ -318,8 +381,8 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
                       )}
                     </button>
 
-                    {/* 선택한 항목의 분석 상태를 후보 바로 아래에 인라인 표시 */}
-                    {item ? renderItemStatus(item) : null}
+                    {/* 선택한 항목의 분석 상태를 후보 바로 아래에 인라인 표시(접힘 시 생략) */}
+                    {item && !isCollapsed ? renderItemStatus(item) : null}
                   </li>
                 );
               })}
