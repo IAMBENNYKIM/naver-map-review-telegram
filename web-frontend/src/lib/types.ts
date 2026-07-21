@@ -49,6 +49,20 @@ export interface PlaceSearchResult {
   places: PlaceCandidate[];
 }
 
+/**
+ * `GET /history` 응답의 개인별 조회 식당 보관함 한 항목
+ * (snake_case → camelCase 매핑 후). 서버가 최신순으로 정렬해 내려준다.
+ */
+export interface HistoryEntry {
+  placeId: string;
+  placeName: string;
+  address: string;
+  /** 마지막 조회 시각 ISO 문자열 (KST 오프셋 포함, 예: `2026-...+09:00`). */
+  lastViewedAt: string;
+  /** 누적 조회 횟수. */
+  viewCount: number;
+}
+
 /** 분석 진행 상태. */
 export type AnalysisStatus = "processing" | "done" | "error";
 

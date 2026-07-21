@@ -10,6 +10,7 @@ import type {
   AnalysisStage,
   AnalysisTarget,
   DailyUsage,
+  HistoryEntry,
   PlaceCandidate,
   PlaceSearchResult,
   ReviewSummary,
@@ -47,7 +48,7 @@ function resolveBaseUrl(): string {
 }
 
 interface RequestOptions {
-  method: "GET" | "POST";
+  method: "GET" | "POST" | "DELETE";
   path: string;
   token?: string;
   body?: unknown;
@@ -191,6 +192,63 @@ export async function searchPlaces(
         .filter((candidate): candidate is PlaceCandidate => candidate !== null)
     : [];
   return { keyword, places };
+}
+
+/** `GET /history` 원본 응답(snake_case). */
+interface RawHistoryResponse {
+  history?: unknown;
+}
+
+/**
+ * 보관함 항목 한 건을 방어적으로 매핑한다.
+ * place_id 가 온전치 않으면 null 을 반환해 호출부가 걸러내게 한다.
+ */
+function toHistoryEntry(value: unknown): HistoryEntry | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const placeId = typeof record.place_id === "string" ? record.place_id : "";
+  if (!placeId) {
+    return null;
+  }
+  const placeName =
+    typeof record.place_name === "string" ? record.place_name : "";
+  const address = typeof record.address === "string" ? record.address : "";
+  const lastViewedAt =
+    typeof record.last_viewed_at === "string" ? record.last_viewed_at : "";
+  const viewCount =
+    typeof record.view_count === "number" && Number.isFinite(record.view_count)
+      ? record.view_count
+      : 0;
+  return { placeId, placeName, address, lastViewedAt, viewCount };
+}
+
+/** `GET /history` — 개인별 조회 식당 보관함을 최신순으로 조회한다. */
+export async function fetchHistory(token: string): Promise<HistoryEntry[]> {
+  const raw = await request<RawHistoryResponse>({
+    method: "GET",
+    path: "/history",
+    token,
+  });
+
+  return Array.isArray(raw.history)
+    ? raw.history
+        .map(toHistoryEntry)
+        .filter((entry): entry is HistoryEntry => entry !== null)
+    : [];
+}
+
+/** `DELETE /history/{place_id}` — 보관함에서 항목 하나를 삭제한다. */
+export async function deleteHistoryEntry(
+  token: string,
+  placeId: string,
+): Promise<void> {
+  await request<{ deleted?: boolean }>({
+    method: "DELETE",
+    path: `/history/${encodeURIComponent(placeId)}`,
+    token,
+  });
 }
 
 /** 백엔드가 내려주는 `GET /result` 원본 응답(snake_case). */

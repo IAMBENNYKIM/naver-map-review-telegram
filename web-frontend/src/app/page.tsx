@@ -3,18 +3,19 @@
 import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { LogOut, Link2, Sparkles } from "lucide-react";
+import { LogOut, Link2, Sparkles, Bookmark } from "lucide-react";
 
 import { InviteGate } from "@/components/InviteGate";
 import { SearchView } from "@/components/SearchView";
 import { AnalyzeView } from "@/components/AnalyzeView";
+import { HistoryView } from "@/components/HistoryView";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { clearSessionToken, getSessionToken } from "@/lib/session";
 
 /** 인증 후 상단 탭 종류. */
-type HomeTab = "search" | "paste";
+type HomeTab = "search" | "paste" | "history";
 
 /** 초기 로딩(토큰 확인) 화면. */
 function LoadingScreen() {
@@ -96,16 +97,25 @@ function HomeContent() {
           <Link2 className="h-4 w-4" aria-hidden="true" />
           링크 붙여넣기
         </TabButton>
+        <TabButton
+          isActive={activeTab === "history"}
+          onClick={() => setActiveTab("history")}
+        >
+          <Bookmark className="h-4 w-4" aria-hidden="true" />
+          보관함
+        </TabButton>
       </div>
 
       {activeTab === "search" ? (
         <SearchView token={token} onSessionExpired={handleLogout} />
-      ) : (
+      ) : activeTab === "paste" ? (
         <AnalyzeView
           token={token}
           initialUrl={prefillUrl}
           onSessionExpired={handleLogout}
         />
+      ) : (
+        <HistoryView token={token} onSessionExpired={handleLogout} />
       )}
 
       {/* 관리자 진입 링크 (눈에 띄지 않게) */}
