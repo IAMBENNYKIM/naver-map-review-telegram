@@ -4,14 +4,17 @@ import { useCallback, useEffect, useState } from "react";
 import {
   AlertCircle,
   Bookmark,
+  ChevronDown,
   ChevronRight,
   Eye,
   MapPin,
   RefreshCw,
+  Search,
   Trash2,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
 import { AnalysisStatusPanel } from "@/components/AnalysisStatusPanel";
@@ -21,6 +24,11 @@ import type { HistoryEntry } from "@/lib/types";
 
 /** 보관함 목록 로딩 단계. */
 type LoadPhase = "loading" | "done" | "error";
+
+/** 완료로 간주하는 분석 단계(재클릭 시 접기 토글 대상). */
+function isFinishedPhase(phase: string): boolean {
+  return phase === "done" || phase === "error" || phase === "timeout";
+}
 
 interface HistoryViewProps {
   token: string;
@@ -80,6 +88,10 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
   const [loadErrorText, setLoadErrorText] = useState<string | null>(null);
   // 결과를 인라인 표시할 선택 항목의 place_id.
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
+  // 선택 항목의 결과 패널을 접었는지 여부(완료 항목 재클릭 시 토글 — 목록 훑기 편의).
+  const [isResultCollapsed, setIsResultCollapsed] = useState(false);
+  // 보관함 내 검색어(클라이언트 필터 — 서버 호출 없음).
+  const [filterText, setFilterText] = useState("");
   // 삭제 진행 중인 항목의 place_id — 해당 삭제 버튼만 잠근다.
   const [deletingPlaceId, setDeletingPlaceId] = useState<string | null>(null);
   // 삭제 실패 등 동작 오류 문구 (목록 상단에 표시).
@@ -120,9 +132,12 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
     if (isAnalyzing) {
       return; // 분석 진행 중에는 다른 항목 선택을 잠근다.
     }
-    if (entry.placeId === selectedPlaceId && phase === "done") {
-      return; // 이미 결과가 있는 항목의 재클릭은 무시 — 재분석은 결과 카드의 갱신 버튼으로.
+    if (entry.placeId === selectedPlaceId && isFinishedPhase(phase)) {
+      // 완료 항목 재클릭 = 결과 접기/펼치기 토글(재분석하지 않는다).
+      setIsResultCollapsed((previous) => !previous);
+      return;
     }
+    setIsResultCollapsed(false); // 새 항목을 분석할 때는 결과를 펼친 상태로 시작한다.
     setSelectedPlaceId(entry.placeId);
     runAnalysis({ placeId: entry.placeId });
   }
@@ -145,6 +160,7 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
       );
       if (selectedPlaceId === entry.placeId) {
         setSelectedPlaceId(null); // 삭제된 항목의 인라인 결과를 닫는다.
+        setIsResultCollapsed(false); // 접힘 상태도 초기화한다.
       }
     } catch (error) {
       if (error instanceof ApiError && error.isUnauthorized) {
@@ -206,8 +222,33 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
     );
   }
 
+  // 보관함 내 검색 — 식당명·주소 부분 일치로 표시할 항목만 거른다(표시만 거르고 상태는 유지).
+  const normalizedFilter = filterText.trim().toLowerCase();
+  const filteredEntries = normalizedFilter
+    ? entries.filter(
+        (entry) =>
+          entry.placeName.toLowerCase().includes(normalizedFilter) ||
+          entry.address.toLowerCase().includes(normalizedFilter),
+      )
+    : entries;
+
   return (
     <div className="space-y-3">
+      <div className="relative">
+        <Search
+          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted"
+          aria-hidden="true"
+        />
+        <Input
+          type="search"
+          value={filterText}
+          onChange={(event) => setFilterText(event.target.value)}
+          placeholder="식당명이나 주소로 찾기"
+          aria-label="보관함 내 검색"
+          className="pl-9"
+        />
+      </div>
+
       {actionErrorText ? (
         <Card>
           <CardContent className="flex items-start gap-3 text-sm text-rose-600 dark:text-rose-400">
@@ -217,10 +258,24 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
         </Card>
       ) : null}
 
+      {filteredEntries.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
+            <Search className="h-8 w-8 text-muted" aria-hidden="true" />
+            <p className="text-sm font-medium">
+              &lsquo;{filterText.trim()}&rsquo;에 해당하는 식당이 없어요
+            </p>
+            <p className="text-xs text-muted">다른 검색어로 찾아보세요.</p>
+          </CardContent>
+        </Card>
+      ) : null}
+
       <ul className="space-y-2">
-        {entries.map((entry) => {
+        {filteredEntries.map((entry) => {
           const isSelected = entry.placeId === selectedPlaceId;
           const isItemAnalyzing = isSelected && isAnalyzing;
+          // 단일 훅이라 phase는 선택 항목에만 적용된다 — 선택+완료 항목만 접기 대상.
+          const isItemFinished = isSelected && isFinishedPhase(phase);
           const isDeleting = entry.placeId === deletingPlaceId;
           const lastViewedLabel = formatLastViewed(entry.lastViewedAt);
 
@@ -231,7 +286,14 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
                   type="button"
                   onClick={() => handleSelect(entry)}
                   disabled={isAnalyzing}
-                  aria-label={`${entry.placeName || "이름 미상 장소"} 리뷰 다시 보기`}
+                  aria-label={
+                    isItemFinished
+                      ? `${entry.placeName || "이름 미상 장소"} 분석 결과 ${
+                          isResultCollapsed ? "펼치기" : "접기"
+                        }`
+                      : `${entry.placeName || "이름 미상 장소"} 리뷰 다시 보기`
+                  }
+                  aria-expanded={isItemFinished ? !isResultCollapsed : undefined}
                   className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 text-left transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-60 dark:hover:bg-white/5"
                 >
                   <div className="min-w-0 flex-1 space-y-0.5">
@@ -256,6 +318,11 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
                   </div>
                   {isItemAnalyzing ? (
                     <Spinner className="h-4 w-4 shrink-0 text-accent" />
+                  ) : isItemFinished && !isResultCollapsed ? (
+                    <ChevronDown
+                      className="h-4 w-4 shrink-0 text-muted"
+                      aria-hidden="true"
+                    />
                   ) : (
                     <ChevronRight
                       className="h-4 w-4 shrink-0 text-muted"
@@ -279,8 +346,8 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
                 </button>
               </div>
 
-              {/* 선택한 항목의 분석 상태를 바로 아래에 인라인 표시 */}
-              {isSelected ? (
+              {/* 선택한 항목의 분석 상태를 바로 아래에 인라인 표시(접힘 시 생략) */}
+              {isSelected && !isResultCollapsed ? (
                 <div className="pt-2">
                   <AnalysisStatusPanel
                     phase={phase}
@@ -288,7 +355,10 @@ export function HistoryView({ token, onSessionExpired }: HistoryViewProps) {
                     result={result}
                     errorText={errorText}
                     isRefreshing={isRefreshing}
-                    onRefresh={refresh}
+                    onRefresh={() => {
+                      setIsResultCollapsed(false); // 갱신 시 접힘을 방어적으로 해제한다.
+                      refresh();
+                    }}
                   />
                 </div>
               ) : null}
