@@ -167,3 +167,61 @@ URL을 모르는 사용자를 위해 자연어 프롬프트로 장소를 찾아 
 - 검색 실측(엔드포인트·coords 필수·자연어 소화 한계)의 원천은 `experiments/findings.md` §6.
 
 **`POST /analyze` 확장**: 기존 `naver_url` **또는** `place_id`(정규식 `^\d+$`) 중 하나를 받는다(둘 다 오면 `place_id` 우선). `place_id` 수신 시 Worker 이벤트 계약에 `place_id`가 실려 `resolve_place`(naver.me 해석)를 생략하고, 이후 캐시·수집·분석은 URL 경로와 동일하다.
+
+### 잡 폴링 계약 (`POST /analyze` · `GET /result/{job_id}`)
+
+분석은 비동기 잡+폴링이다. `/analyze`는 잡을 만들고 즉시 `202 {"job_id"}`를 돌려주며, 프론트가 `/result/{job_id}`를 폴링해 상태를 받는다. (필드는 `src/web_api_handler.py`의 `_handle_analyze`·`_handle_result` 코드 기준.)
+
+**`POST /analyze`** (Bearer 세션 필요)
+
+요청:
+```json
+{ "naver_url": "https://naver.me/...", "place_id": "1234567", "force_refresh": false }
+```
+- `naver_url` **또는** `place_id`(`^\d+$`) 중 하나 필수(둘 다 오면 `place_id` 우선). `force_refresh`(기본 `false`): 캐시를 무시하고 강제 재분석(Telegram `/update` 패리티).
+- 응답 (202): `{ "job_id": "..." }`.
+- 캐시 히트 직결: `place_id` 경로 + `force_refresh=false`에서 공유 캐시가 히트면 워커 invoke 없이 done 잡을 즉시 생성해 202를 반환한다(결정 7-① — `docs/web-design.md`).
+- 오류: 401(세션 무효)·400(body JSON 파싱 실패 / `place_id` 형식 오류 / `naver_url` 허용호스트 위반 / 둘 다 누락)·429(일일 LLM 상한 초과 — 캐시 미스 경로만).
+
+**`GET /result/{job_id}`** (Bearer 세션 필요, 소유권 확인 — 잡 부재·타인 잡 모두 404로 존재 숨김)
+
+응답 (200)은 `status`에 따라 3형태:
+```json
+{ "status": "processing", "stage": "cache_check" }
+```
+- `stage` ∈ `"cache_check"` → `"collecting"` → `"summarizing"` → `""`(구버전·전이 전 폴백). 대기 중 현재 단계 표시용.
+```json
+{ "status": "done", "summary_json": "{...}", "place_name": "...", "address": "...",
+  "review_count": 48, "cache_hit": false, "updated_at": "2026-07-21T..." }
+```
+- `summary_json`은 **JSON 문자열**(파싱하면 §4 분석 계약 구조 — 프론트가 `parseSummaryJson`으로 파싱). `cache_hit`은 캐시 응답 여부, `updated_at`은 분석 시각(ISO 8601·KST).
+```json
+{ "status": "error", "error_message": "..." }
+```
+- 오류: 401(세션 무효)·404(잡 부재 또는 소유자 불일치).
+
+### 10-2. 보관함(조회 이력) — 2026-07-21 라이브
+
+분석한 식당을 다시 찾을 수 있게 identity별 조회 이력을 남긴다.
+
+**`GET /history`** (Bearer 세션 필요)
+```json
+{ "history": [
+  {"place_id": "1234567", "place_name": "...", "address": "...", "last_viewed_at": "2026-07-21T...", "view_count": 3}
+] }
+```
+- `last_viewed_at` 내림차순(최신순). `view_count`는 정수.
+
+**`DELETE /history/{place_id}`** (Bearer 세션 필요, `place_id` `^\d+$` 위반 시 400) → `{ "deleted": true }`.
+
+UI: 항목 클릭 시 재분석(place_id 경로라 캐시 히트 직결로 즉시 응답), 완료된 항목을 재클릭하면 결과 접기 토글, 보관함 내 검색(식당명·주소 로컬 필터 — 서버 호출 없음). 저장 스키마·identity당 50건 상한은 `ARCHITECTURE.md`, PII 최소화(리뷰 본문·summary 미저장) 근거는 `docs/web-design.md` 결정 9-③ 참조.
+
+### 10-3. 일괄·다중 분석 — 2026-07-21 라이브
+
+- **검색 배치 분석**: 검색 결과 상위 5곳을 "상위 5곳 분석하기"·"다음 5곳"으로 일괄 분석, 결과는 각 후보 항목 아래 인라인 표시.
+- **다중 링크 붙여넣기**: 공유 텍스트에 섞인 네이버 링크를 최대 5개까지 순차 분석.
+- **검색 결과 접기 토글**(2026-07-22): 완료된 후보 항목을 재클릭해 분석 결과를 접고 펼친다.
+
+프론트가 한 번에 하나씩 순차 실행하고(동시 워커 ≤ 1 — 네이버 429 방어) 429 응답 시 잔여 대상을 조기 중단하는 설계 근거는 `docs/web-design.md` 결정 9-① 참조.
+
+**일일 LLM 상한**: 캐시 미스(실과금) 경로는 identity별 일일 상한(`WEB_DAILY_LLM_LIMIT`, 기본 100 — 템플릿 파라미터 `WebDailyLlmLimit`로 코드 수정 없이 조정)으로 비용 폭탄을 사전 차단한다(근거 `docs/web-design.md` 결정 8-②). 캐시 히트는 비용 0이라 상한에서 제외된다.
