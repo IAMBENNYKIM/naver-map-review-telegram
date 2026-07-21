@@ -101,6 +101,15 @@
   - **API GW 스로틀**(burst 10/rate 5) + **CORS 기본값 고정**(template 기본을 Vercel 도메인으로 — `*` 원복 함정 제거) + **프론트 보안 헤더**(CSP·HSTS·X-Frame-Options 등, `next.config.ts`).
   - 검증 pytest 226·`sam validate`·`npm build/lint` 그린, 웹 스택 배포·Telegram 무손상 확인·Vercel 헤더 실측. 설계 근거는 `docs/web-design.md` 결정 8. 커밋 `f94a943`·`87e821e`·`fa98e0a`.
 
+- [x] 5-11 (A/D) VOC 대응 6종 (2026-07-21):
+  - **일일 LLM 상한 50→100(#1)**: `config.WEB_DAILY_LLM_LIMIT` 기본값 100으로 상향 + 템플릿 파라미터 `WebDailyLlmLimit`(기본 100) 신설 — 코드 수정 없이 배포 파라미터로 조정. 지인 다중 링크·보관함 도입에 따른 정상 사용량 증가 반영(하향은 결정 3 방어 강화 트리거).
+  - **관리자 차트 검색 지표(#2)**: 관리자 사용량 차트에 검색(`search`) 지표 추가(프론트 전용, 백엔드 `search_count`/`search#` 재사용).
+  - **잡 진행 단계(#3)**: `web_jobs`에 `stage`(`cache_check`→`collecting`→`summarizing`) 속성(스키마리스), `web_store.update_job_stage`로 갱신(비크리티컬), `GET /result` processing 응답에 `stage` 노출, 프론트 `AnalysisStatusPanel` 단계 체크리스트.
+  - **보관함(#4)**: 신규 테이블 `${prefix}web_history`(PK identity + SK place_id, 필드 `place_name`·`address`·`first_viewed_at`·`last_viewed_at`·`view_count`, identity당 50건 상한 `trim_history`, TTL 없음, PII 최소화 — 리뷰 본문·summary 미저장). `web_store.record_history`/`trim_history`/`get_history`/`delete_history_entry`, `GET /history`·`DELETE /history/{place_id}` API, HttpApi `AllowMethods`에 DELETE 추가, WebApi·WebWorker IAM에 history 권한. 프론트 보관함 탭 `HistoryView`.
+  - **검색 배치 분석(#5)**: 검색 결과 상위 5곳 일괄 분석("상위 5곳 분석하기"+"다음 5곳", `BATCH_SIZE=5`) — 프론트 `useBatchAnalysis` 훅이 순차 실행(동시 실행 금지, 네이버 429 방어 — 동시 워커 ≤1), 429 응답 시 잔여 조기 중단. 결과는 각 후보 항목 아래 인라인 표시. 폴링·요청 본체는 `lib/analysis-runner.ts`(`runAnalysisToCompletion`)로 분리해 단건·배치 공유.
+  - **다중 링크 붙여넣기(#6)**: 공유 텍스트에 섞인 네이버 링크 최대 5개를 순차 분석. `naver-url.extractNaverUrls`(복수 매칭) 신설, 단건 `extractNaverUrl`은 첫 링크로 위임.
+  - 설계 근거·거부 대안은 `docs/web-design.md` 결정 9(일일 상한 상향은 결정 8-②·3-⑤ 반영). 커밋 `a6a18ac`~`df60025`.
+
 ## 백로그 (MVP 이후, VOC 기반 결정)
 
 - ~~per-identity 일일 쿼터~~ → 5-10에서 구현 완료(`WEB_DAILY_LLM_LIMIT`, 2026-07-18). 확산 시 한도 조정·검색 경로 쿼터 확대는 잔여 과제.
