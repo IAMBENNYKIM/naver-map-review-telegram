@@ -48,6 +48,13 @@ Parameters:
     Type: String
     Default: "true"
     Description: 검색어 정규화 LLM 킬 스위치 (config.SEARCH_LLM_ENABLED). 비용 차단용.
+  WebDailyLlmLimit:
+    Type: String
+    Default: "100"
+    Description: >
+      identity별 1일 신규 분석(LLM 호출) 상한 (config.WEB_DAILY_LLM_LIMIT). 캐시 히트는
+      제외되며, 상한 검사는 web_api_handler._handle_analyze에서만 수행한다. 비용 폭탄 방어용 —
+      코드 수정 없이 배포 파라미터로 조정한다.
 
 # ---------------------------------------------------------------------------
 # 조건 (이메일이 있을 때만 예산 리소스 생성)
@@ -108,6 +115,8 @@ Resources:
           DYNAMO_TABLE_PREFIX: !Ref TablePrefix
           WEB_WORKER_FUNCTION_NAME: !Ref WebWorkerFunction
           SEARCH_LLM_ENABLED: !Ref SearchLlmEnabled
+          # 일일 LLM 상한 검사는 이 함수(_handle_analyze)에서만 수행 — WebWorker에는 주입하지 않는다.
+          WEB_DAILY_LLM_LIMIT: !Ref WebDailyLlmLimit
           # 캐시 히트 직결(lookup_cached_summary)이 prod 캐시를 read-through로 읽는다.
           PROD_REVIEW_CACHE_TABLE: !Ref ProdReviewCacheTable
       Events:

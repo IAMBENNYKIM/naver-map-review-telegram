@@ -105,7 +105,7 @@ WEB_ALLOWED_NAVER_HOSTS: frozenset[str] = frozenset({"naver.me", "naver.com"})
 
 # identity별 1일 신규 분석(LLM 호출) 상한 — 비용 폭탄 방어. 캐시 히트는 제외한다
 # (비용이 없으므로 상한 대상이 아니다). 환경변수 WEB_DAILY_LLM_LIMIT로 override 가능.
-WEB_DAILY_LLM_LIMIT: int = int(os.getenv("WEB_DAILY_LLM_LIMIT", "50"))
+WEB_DAILY_LLM_LIMIT: int = int(os.getenv("WEB_DAILY_LLM_LIMIT", "100"))
 
 # get_secret()가 추출하는 자격증명 키 목록 (.env / Secrets Manager 공통 스키마)
 # ★ .env.example 의 키 목록과 정확히 일치시킨다.
