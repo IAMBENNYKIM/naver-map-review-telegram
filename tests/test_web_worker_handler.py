@@ -47,6 +47,8 @@ def _patch_common(monkeypatch):
         "fail_job": MagicMock(),
         "log_usage": MagicMock(),
         "update_job_stage": MagicMock(),
+        "record_history": MagicMock(),
+        "trim_history": MagicMock(),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(web_worker_handler.web_store, name, mock)
@@ -94,6 +96,11 @@ class TestCacheHit:
         # 캐시의 updated_at이 잡 완료 기록으로 전파된다.
         assert mocks["complete_job"].call_args.kwargs["updated_at"] == UPDATED_AT
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=True)
+        # 캐시의 place_name·address로 조회 이력을 기록하고 정리한다.
+        mocks["record_history"].assert_called_once_with(
+            IDENTITY, PLACE_ID, "돈멜 본점", "성남시 분당구"
+        )
+        mocks["trim_history"].assert_called_once_with(IDENTITY)
         # prod 캐시는 조회하지 않는다(web 히트로 조기 반환)
         mocks["get_prod_cached_summary"].assert_not_called()
         mocks["fail_job"].assert_not_called()
@@ -147,6 +154,11 @@ class TestFreshAnalysis:
         assert complete_kwargs["updated_at"] == UPDATED_AT
 
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=False)
+        # 신규 분석 결과의 place_name·address로 조회 이력을 기록하고 정리한다.
+        mocks["record_history"].assert_called_once_with(
+            IDENTITY, PLACE_ID, PLACE_DETAIL["name"], PLACE_DETAIL["address"]
+        )
+        mocks["trim_history"].assert_called_once_with(IDENTITY)
         mocks["fail_job"].assert_not_called()
 
     def test_캐시_미스면_collecting_summarizing_단계를_순서대로_전이한다(self, monkeypatch):
@@ -236,6 +248,9 @@ class TestFreshAnalysis:
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=False)
         mocks["complete_job"].assert_not_called()
         mocks["save_web_summary"].assert_not_called()
+        # 실패 잡은 조회 이력을 기록하지 않는다.
+        mocks["record_history"].assert_not_called()
+        mocks["trim_history"].assert_not_called()
 
 
 class TestFailurePaths:

@@ -99,6 +99,11 @@ def _route(method: str, path: str, event: dict) -> dict:
         return _handle_analyze(event)
     if method == "GET" and path == "/admin/stats":
         return _handle_admin_stats(event)
+    if method == "GET" and path == "/history":
+        return _handle_history(event)
+    # DELETE /history/{place_id} — path 파라미터로 place_id 확보(prefix 매칭)
+    if method == "DELETE" and path.startswith("/history/"):
+        return _handle_history_delete(event)
     # /result/{job_id} — path 파라미터로 job_id 확보(prefix 매칭)
     if method == "GET" and path.startswith("/result/"):
         return _handle_result(event)
@@ -230,6 +235,11 @@ def _handle_analyze(event: dict) -> dict:
             )
             # 워커의 캐시 히트 경로와 동일하게 사용량을 기록한다(cache_hit=True).
             web_store.log_usage(identity, cache_hit=True)
+            # 조회 이력(보관함) 기록 + 초과분 정리(둘 다 비크리티컬).
+            web_store.record_history(
+                identity, place_id, cached["place_name"], cached["address"]
+            )
+            web_store.trim_history(identity)
             logger.info(
                 "캐시 히트 직결 잡 완료 (job_id=%s, identity=%s)", job_id, identity
             )
@@ -294,6 +304,45 @@ def _handle_admin_stats(event: dict) -> dict:
         for item in web_store.get_all_usage()
     ]
     return _response(200, {"usage": _to_jsonable(usage)})
+
+
+def _handle_history(event: dict) -> dict:
+    """GET /history — 세션 검증 후 본인 조회 이력을 최신순으로 반환한다.
+
+    응답 계약: {"history": [{place_id, place_name, address, last_viewed_at, view_count}, ...]}.
+    get_history가 last_viewed_at 내림차순으로 정렬해 반환하며, 여기서 계약 필드만
+    추려 응답한다(identity·first_viewed_at 등 내부 필드는 노출하지 않는다).
+    view_count는 Decimal이므로 _to_jsonable로 int 직렬화한다.
+    """
+    identity = _authenticate_session(event)
+    if not identity:
+        return _response(401, {"error": "unauthorized"})
+
+    history = [
+        {
+            "place_id": item.get("place_id"),
+            "place_name": item.get("place_name", ""),
+            "address": item.get("address", ""),
+            "last_viewed_at": item.get("last_viewed_at", ""),
+            "view_count": item.get("view_count", 0),
+        }
+        for item in web_store.get_history(identity)
+    ]
+    return _response(200, {"history": _to_jsonable(history)})
+
+
+def _handle_history_delete(event: dict) -> dict:
+    """DELETE /history/{place_id} — 세션 검증 + place_id 형식 검증 후 이력 1건을 삭제한다."""
+    identity = _authenticate_session(event)
+    if not identity:
+        return _response(401, {"error": "unauthorized"})
+
+    place_id = (event.get("pathParameters") or {}).get("place_id", "")
+    if not _PLACE_ID_PATTERN.match(str(place_id)):
+        return _response(400, {"error": "invalid place_id"})
+
+    web_store.delete_history_entry(identity, str(place_id))
+    return _response(200, {"deleted": True})
 
 
 # ---------------------------------------------------------------------------

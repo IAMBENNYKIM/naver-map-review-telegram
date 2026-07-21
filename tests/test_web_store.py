@@ -25,7 +25,7 @@ def _create_table(dynamodb, table_name: str, partition_key: str):
 
 @pytest.fixture()
 def web_tables():
-    """moto 가상 DynamoDB에 web 3개 테이블 + prod 캐시 테이블을 생성한다."""
+    """moto 가상 DynamoDB에 web 4개 테이블 + prod 캐시 테이블을 생성한다."""
     with mock_aws():
         dynamodb = boto3.resource("dynamodb", region_name=config.AWS_REGION)
         jobs = _create_table(dynamodb, config.WEB_JOBS_TABLE, "job_id")
@@ -34,11 +34,25 @@ def web_tables():
         prod_cache = _create_table(
             dynamodb, config.PROD_REVIEW_CACHE_TABLE, "place_key"
         )
+        # 조회 이력 테이블은 복합 키(PK identity + SK place_id)다.
+        history = dynamodb.create_table(
+            TableName=config.WEB_HISTORY_TABLE,
+            KeySchema=[
+                {"AttributeName": "identity", "KeyType": "HASH"},
+                {"AttributeName": "place_id", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "identity", "AttributeType": "S"},
+                {"AttributeName": "place_id", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
         yield {
             "jobs": jobs,
             "cache": cache,
             "usage": usage,
             "prod_cache": prod_cache,
+            "history": history,
         }
 
 
@@ -580,6 +594,167 @@ class TestSummarizeUsageItem:
         summary = web_store.summarize_usage_item(item)
 
         assert summary["daily"] == []
+
+
+# ---------------------------------------------------------------------------
+# 조회 이력 (record_history / trim_history / get_history / delete_history_entry)
+# ---------------------------------------------------------------------------
+class TestRecordHistory:
+    def test_신규_기록은_view_count가_1이다(self, web_tables):
+        web_store.record_history("친구A", "33099281", "돈멜 본점", "경기 성남시")
+
+        item = web_tables["history"].get_item(
+            Key={"identity": "친구A", "place_id": "33099281"}
+        )["Item"]
+        assert item["place_name"] == "돈멜 본점"
+        assert item["address"] == "경기 성남시"
+        assert item["view_count"] == 1
+        assert "+09:00" in item["last_viewed_at"]
+        assert "+09:00" in item["first_viewed_at"]
+
+    def test_재조회하면_view_count가_증가하고_first_viewed_at은_보존된다(self, web_tables):
+        web_store.record_history("친구A", "33099281", "돈멜 본점", "경기 성남시")
+        first = web_tables["history"].get_item(
+            Key={"identity": "친구A", "place_id": "33099281"}
+        )["Item"]
+        first_viewed_at = first["first_viewed_at"]
+
+        # 이름·주소를 바꿔 재조회 — 최신값으로 덮어쓰되 first_viewed_at은 유지돼야 한다.
+        web_store.record_history("친구A", "33099281", "돈멜 신관", "서울 강남구")
+        second = web_tables["history"].get_item(
+            Key={"identity": "친구A", "place_id": "33099281"}
+        )["Item"]
+
+        assert second["view_count"] == 2
+        assert second["place_name"] == "돈멜 신관"
+        assert second["address"] == "서울 강남구"
+        assert second["first_viewed_at"] == first_viewed_at
+
+    def test_다른_identity는_독립적으로_기록된다(self, web_tables):
+        web_store.record_history("친구A", "33099281", "돈멜 본점", "경기 성남시")
+        web_store.record_history("친구B", "33099281", "돈멜 본점", "경기 성남시")
+
+        a_item = web_tables["history"].get_item(
+            Key={"identity": "친구A", "place_id": "33099281"}
+        )["Item"]
+        b_item = web_tables["history"].get_item(
+            Key={"identity": "친구B", "place_id": "33099281"}
+        )["Item"]
+        assert a_item["view_count"] == 1
+        assert b_item["view_count"] == 1
+
+    def test_기록_실패는_예외를_전파하지_않는다(self):
+        with patch.object(
+            web_store, "_history_table", side_effect=RuntimeError("연결 실패")
+        ), patch.object(web_store.logger, "warning") as mock_warning:
+            web_store.record_history("친구A", "33099281", "이름", "주소")
+        mock_warning.assert_called_once()
+
+
+class TestTrimHistory:
+    def _seed(self, web_tables, identity: str, count: int):
+        """last_viewed_at이 index와 함께 단조 증가하는 count개의 이력을 심는다.
+
+        index가 클수록 최신(last_viewed_at이 큼)이 되도록 분(minute)을 index로 채운다
+        (count ≤ 60 가정 — 테스트 규모에 충분). place-000이 가장 오래됨.
+        """
+        for index in range(count):
+            web_tables["history"].put_item(
+                Item={
+                    "identity": identity,
+                    "place_id": f"place-{index:03d}",
+                    "place_name": f"장소{index}",
+                    "address": "주소",
+                    "last_viewed_at": f"2026-07-01T00:{index:02d}:00+09:00",
+                    "view_count": Decimal(1),
+                }
+            )
+
+    def test_limit_이하면_아무것도_삭제하지_않는다(self, web_tables):
+        self._seed(web_tables, "친구A", 5)
+
+        web_store.trim_history("친구A", limit=50)
+
+        remaining = web_tables["history"].scan()["Items"]
+        assert len(remaining) == 5
+
+    def test_초과분은_오래된_순으로_삭제된다(self, web_tables):
+        # last_viewed_at 오름차순으로 index 0이 가장 오래됨. 52개 중 오래된 2개 삭제.
+        self._seed(web_tables, "친구A", 52)
+
+        web_store.trim_history("친구A", limit=50)
+
+        remaining = web_tables["history"].scan()["Items"]
+        assert len(remaining) == 50
+        remaining_ids = {row["place_id"] for row in remaining}
+        # 가장 오래된 place-000, place-001이 제거된다.
+        assert "place-000" not in remaining_ids
+        assert "place-001" not in remaining_ids
+        assert "place-051" in remaining_ids
+
+    def test_정리_실패는_예외를_전파하지_않는다(self):
+        with patch.object(
+            web_store, "_history_table", side_effect=RuntimeError("연결 실패")
+        ), patch.object(web_store.logger, "warning") as mock_warning:
+            web_store.trim_history("친구A")
+        mock_warning.assert_called_once()
+
+
+class TestGetHistory:
+    def test_최신순으로_정렬해_반환한다(self, web_tables):
+        web_tables["history"].put_item(
+            Item={
+                "identity": "친구A",
+                "place_id": "old",
+                "place_name": "오래된 곳",
+                "address": "주소1",
+                "last_viewed_at": "2026-07-01T10:00:00+09:00",
+                "view_count": Decimal(1),
+            }
+        )
+        web_tables["history"].put_item(
+            Item={
+                "identity": "친구A",
+                "place_id": "new",
+                "place_name": "최근 곳",
+                "address": "주소2",
+                "last_viewed_at": "2026-07-20T10:00:00+09:00",
+                "view_count": Decimal(3),
+            }
+        )
+
+        history = web_store.get_history("친구A")
+
+        assert [row["place_id"] for row in history] == ["new", "old"]
+        assert history[0]["view_count"] == Decimal(3)
+
+    def test_이력이_없으면_빈_리스트다(self, web_tables):
+        assert web_store.get_history("없는사용자") == []
+
+    def test_조회_실패는_빈_리스트로_흡수한다(self):
+        with patch.object(
+            web_store, "_history_table", side_effect=RuntimeError("연결 실패")
+        ):
+            assert web_store.get_history("친구A") == []
+
+
+class TestDeleteHistoryEntry:
+    def test_지정한_항목만_삭제한다(self, web_tables):
+        web_store.record_history("친구A", "111", "가", "주소")
+        web_store.record_history("친구A", "222", "나", "주소")
+
+        web_store.delete_history_entry("친구A", "111")
+
+        remaining = web_tables["history"].scan()["Items"]
+        remaining_ids = {row["place_id"] for row in remaining}
+        assert remaining_ids == {"222"}
+
+    def test_삭제_실패는_예외를_전파하지_않는다(self):
+        with patch.object(
+            web_store, "_history_table", side_effect=RuntimeError("연결 실패")
+        ), patch.object(web_store.logger, "warning") as mock_warning:
+            web_store.delete_history_entry("친구A", "111")
+        mock_warning.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,11 @@ def _usage_table():
     return _dynamodb_resource().Table(config.WEB_USAGE_TABLE)
 
 
+def _history_table():
+    """web_history 테이블 리소스를 반환한다(identity별 조회 이력)."""
+    return _dynamodb_resource().Table(config.WEB_HISTORY_TABLE)
+
+
 # ---------------------------------------------------------------------------
 # Jobs (비동기 분석 잡 상태)
 # ---------------------------------------------------------------------------
@@ -502,3 +507,136 @@ def get_all_usage() -> list[dict]:
     except Exception as error:  # noqa: BLE001 (통계 조회 실패는 빈 리스트로 흡수)
         logger.warning("사용량 전체 조회 실패(무시): %s", error)
         return []
+
+
+# ---------------------------------------------------------------------------
+# 조회 이력 (identity별 식당 보관함 — PK identity + SK place_id)
+# ---------------------------------------------------------------------------
+# PII 최소화(제약 7): 이력에는 식당명·주소·place_id·시각·조회 횟수만 저장한다.
+# 리뷰 본문·summary_json은 절대 저장하지 않으며, 로깅도 identity·place_id 수준만 남긴다.
+def record_history(
+    identity: str, place_id: str, place_name: str, address: str
+) -> None:
+    """identity의 place_id 조회 이력을 1회 UpdateItem으로 갱신한다. 실패는 로깅만(비크리티컬).
+
+    - place_name·address·last_viewed_at: 매 조회마다 최신값으로 덮어쓴다.
+    - first_viewed_at: 최초 조회 시각을 if_not_exists로 한 번만 기록한다(보존).
+    - view_count: DynamoDB ADD로 원자적 +1(없는 속성은 0에서 시작).
+
+    이력 기록 실패가 분석 응답을 막아서는 안 되므로(제약 8) 어떤 예외도 흡수하고
+    warning 로깅만 한다. place_name·address는 DynamoDB 예약어 충돌을 피해 별칭을 쓴다.
+    """
+    now = _now_kst_iso()
+    try:
+        _history_table().update_item(
+            Key={"identity": identity, "place_id": place_id},
+            UpdateExpression=(
+                "SET #place_name = :place_name, #address = :address, "
+                "last_viewed_at = :now, "
+                "first_viewed_at = if_not_exists(first_viewed_at, :now) "
+                "ADD view_count :one"
+            ),
+            ExpressionAttributeNames={
+                "#place_name": "place_name",
+                "#address": "address",
+            },
+            ExpressionAttributeValues={
+                ":place_name": place_name,
+                ":address": address,
+                ":now": now,
+                ":one": 1,
+            },
+        )
+    except Exception as error:  # noqa: BLE001 (이력 기록 실패는 비크리티컬)
+        logger.warning(
+            "조회 이력 기록 실패(무시, identity=%s, place_id=%s): %s",
+            identity,
+            place_id,
+            error,
+        )
+
+
+def trim_history(identity: str, limit: int = 50) -> None:
+    """identity의 이력이 limit를 초과하면 오래된 항목부터 삭제한다. 실패는 로깅만(비크리티컬).
+
+    Query(ProjectionExpression으로 place_id·last_viewed_at만)로 전체 이력을 읽어
+    개수가 limit 이하이면 아무것도 하지 않는다. 초과 시 last_viewed_at 오래된 순으로
+    정렬해 초과분을 delete_item으로 제거한다(최신 limit개만 남긴다).
+    """
+    from boto3.dynamodb.conditions import Key
+
+    try:
+        table = _history_table()
+        response = table.query(
+            KeyConditionExpression=Key("identity").eq(identity),
+            ProjectionExpression="place_id, last_viewed_at",
+        )
+        history_items = response.get("Items", [])
+        while "LastEvaluatedKey" in response:
+            response = table.query(
+                KeyConditionExpression=Key("identity").eq(identity),
+                ProjectionExpression="place_id, last_viewed_at",
+                ExclusiveStartKey=response["LastEvaluatedKey"],
+            )
+            history_items.extend(response.get("Items", []))
+
+        if len(history_items) <= limit:
+            return
+
+        # last_viewed_at 오름차순(오래된 순) 정렬 후 초과분(앞쪽)을 삭제한다.
+        history_items.sort(key=lambda item: item.get("last_viewed_at", ""))
+        overflow_items = history_items[: len(history_items) - limit]
+        for item in overflow_items:
+            table.delete_item(
+                Key={"identity": identity, "place_id": item["place_id"]}
+            )
+    except Exception as error:  # noqa: BLE001 (이력 정리 실패는 비크리티컬)
+        logger.warning(
+            "조회 이력 정리 실패(무시, identity=%s): %s", identity, error
+        )
+
+
+def get_history(identity: str) -> list[dict]:
+    """identity의 조회 이력을 last_viewed_at 내림차순(최신순)으로 반환한다.
+
+    Query로 전체 이력을 읽어 메모리에서 정렬한다(trim_history로 항목이 limit
+    이하로 유지되므로 안전). 실패 시 빈 리스트(비크리티컬 조회 — get_all_usage 관례).
+    반환 항목은 원시 DynamoDB dict이며, view_count는 Decimal이다(호출부가 직렬화).
+    """
+    from boto3.dynamodb.conditions import Key
+
+    try:
+        table = _history_table()
+        response = table.query(
+            KeyConditionExpression=Key("identity").eq(identity)
+        )
+        history_items = response.get("Items", [])
+        while "LastEvaluatedKey" in response:
+            response = table.query(
+                KeyConditionExpression=Key("identity").eq(identity),
+                ExclusiveStartKey=response["LastEvaluatedKey"],
+            )
+            history_items.extend(response.get("Items", []))
+    except Exception as error:  # noqa: BLE001 (이력 조회 실패는 빈 리스트로 흡수)
+        logger.warning("조회 이력 조회 실패(무시, identity=%s): %s", identity, error)
+        return []
+
+    history_items.sort(
+        key=lambda item: item.get("last_viewed_at", ""), reverse=True
+    )
+    return history_items
+
+
+def delete_history_entry(identity: str, place_id: str) -> None:
+    """identity의 place_id 이력 1건을 삭제한다. 실패는 로깅만(비크리티컬)."""
+    try:
+        _history_table().delete_item(
+            Key={"identity": identity, "place_id": place_id}
+        )
+    except Exception as error:  # noqa: BLE001 (이력 삭제 실패는 비크리티컬)
+        logger.warning(
+            "조회 이력 삭제 실패(무시, identity=%s, place_id=%s): %s",
+            identity,
+            place_id,
+            error,
+        )

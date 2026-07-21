@@ -89,6 +89,7 @@ Resources:
         AllowMethods:
           - GET
           - POST
+          - DELETE
           - OPTIONS
         AllowHeaders:
           - authorization
@@ -150,6 +151,18 @@ Resources:
             ApiId: !Ref WebHttpApi
             Path: /admin/stats
             Method: get
+        History:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /history
+            Method: get
+        HistoryDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WebHttpApi
+            Path: /history/{place_id}
+            Method: delete
         # 워밍 핑 — 5분 주기로 콜드스타트 방지(핸들러가 warmup 이벤트를 즉시 반환).
         Warmup:
           Type: Schedule
@@ -197,6 +210,16 @@ Resources:
                 - dynamodb:PutItem
               Resource:
                 - !GetAtt WebCacheTable.Arn
+            - Sid: HistoryTableAccess
+              Effect: Allow
+              Action:
+                # GET /history 조회(Query) + DELETE /history(DeleteItem) +
+                # 캐시 히트 직결의 record_history(UpdateItem)·trim_history(Query+DeleteItem).
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+              Resource:
+                - !GetAtt WebHistoryTable.Arn
             - Sid: SecretsManagerRead
               Effect: Allow
               Action:
@@ -254,6 +277,15 @@ Resources:
                 - dynamodb:UpdateItem
               Resource:
                 - !GetAtt WebUsageTable.Arn
+            - Sid: HistoryTableAccess
+              Effect: Allow
+              Action:
+                # 잡 완료 경로의 record_history(UpdateItem) + trim_history(Query+DeleteItem).
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+              Resource:
+                - !GetAtt WebHistoryTable.Arn
             - Sid: ProdCacheReadOnly
               Effect: Allow
               Action:
@@ -315,6 +347,25 @@ Resources:
       KeySchema:
         - AttributeName: identity
           KeyType: HASH
+
+  # -------------------------------------------------------------------------
+  # DynamoDB — identity별 조회 이력(보관함) (온디맨드, PK=identity + SK=place_id, TTL 미사용)
+  # -------------------------------------------------------------------------
+  WebHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${TablePrefix}web_history"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: identity
+          AttributeType: S
+        - AttributeName: place_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: identity
+          KeyType: HASH
+        - AttributeName: place_id
+          KeyType: RANGE
 
   # -------------------------------------------------------------------------
   # AWS Budgets — 월간 비용 예산 알림 (이메일이 설정된 경우에만 생성)
@@ -379,3 +430,6 @@ Outputs:
   WebUsageTableName:
     Description: 사용량 통계 테이블명
     Value: !Ref WebUsageTable
+  WebHistoryTableName:
+    Description: 조회 이력(보관함) 테이블명
+    Value: !Ref WebHistoryTable

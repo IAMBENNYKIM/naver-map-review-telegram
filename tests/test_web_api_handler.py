@@ -29,6 +29,18 @@ def _stub_daily_llm_count():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _stub_history_writes():
+    """조회 이력 쓰기(record_history·trim_history)를 no-op로 고정한다.
+
+    캐시 히트 직결 경로가 이 두 함수를 호출하는데, 모의가 없으면 실제 DynamoDB
+    접근을 시도한다(비크리티컬이라 흡수되지만 불필요). 호출 여부를 검증하는 테스트는
+    자기 with 블록에서 재패치해 덮어쓴다(내부 patch 우선).
+    """
+    with patch("web_store.record_history"), patch("web_store.trim_history"):
+        yield
+
+
 def build_event(
     method: str,
     path: str,
@@ -364,6 +376,10 @@ class TestAnalyzeCacheHitDirect:
         ) as mock_create_job, patch(
             "web_store.log_usage"
         ) as mock_log_usage, patch(
+            "web_store.record_history"
+        ) as mock_record_history, patch(
+            "web_store.trim_history"
+        ) as mock_trim_history, patch(
             "boto3.client", return_value=mock_lambda_client
         ):
             result = web_api_handler.lambda_handler(event, None)
@@ -386,6 +402,15 @@ class TestAnalyzeCacheHitDirect:
 
         # 캐시 히트 사용량 기록(cache_hit=True).
         mock_log_usage.assert_called_once_with(INVITE_IDENTITY, cache_hit=True)
+
+        # 조회 이력(보관함) 기록 + 정리가 캐시 내용으로 호출된다.
+        mock_record_history.assert_called_once_with(
+            INVITE_IDENTITY,
+            "33099281",
+            self._CACHED["place_name"],
+            self._CACHED["address"],
+        )
+        mock_trim_history.assert_called_once_with(INVITE_IDENTITY)
 
         # 워커 invoke·create_job(processing)은 호출되지 않는다.
         mock_lambda_client.invoke.assert_not_called()
@@ -812,6 +837,102 @@ class TestAdminStats:
 
         assert result["statusCode"] == 401
         mock_get_all_usage.assert_not_called()
+
+
+class TestHistory:
+    """GET /history — 본인 조회 이력 반환."""
+
+    def test_토큰이_없으면_401을_반환한다(self):
+        event = build_event("GET", "/history")
+
+        result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 401
+
+    def test_이력을_계약_형태로_반환한다(self):
+        history_items = [
+            {
+                "identity": INVITE_IDENTITY,  # 내부 필드 — 응답에 노출되면 안 된다.
+                "place_id": "33099281",
+                "place_name": "돈멜 본점",
+                "address": "경기 성남시",
+                "last_viewed_at": "2026-07-20T10:00:00+09:00",
+                "first_viewed_at": "2026-07-01T09:00:00+09:00",  # 내부 필드
+                "view_count": Decimal("3"),  # Decimal → int 직렬화 확인
+            }
+        ]
+        event = build_event(
+            "GET", "/history", headers=bearer(session_token())
+        )
+        with patch("web_store.get_history", return_value=history_items) as mock_get:
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        mock_get.assert_called_once_with(INVITE_IDENTITY)
+        assert body["history"] == [
+            {
+                "place_id": "33099281",
+                "place_name": "돈멜 본점",
+                "address": "경기 성남시",
+                "last_viewed_at": "2026-07-20T10:00:00+09:00",
+                "view_count": 3,
+            }
+        ]
+        # 내부 필드(identity·first_viewed_at)는 노출되지 않는다.
+        assert "identity" not in body["history"][0]
+        assert "first_viewed_at" not in body["history"][0]
+
+    def test_이력이_없으면_빈_리스트를_반환한다(self):
+        event = build_event(
+            "GET", "/history", headers=bearer(session_token())
+        )
+        with patch("web_store.get_history", return_value=[]):
+            result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["history"] == []
+
+
+class TestHistoryDelete:
+    """DELETE /history/{place_id} — 본인 이력 1건 삭제."""
+
+    def _event(self, place_id: str, token: str) -> dict:
+        return build_event(
+            "DELETE",
+            f"/history/{place_id}",
+            headers=bearer(token),
+            path_parameters={"place_id": place_id},
+        )
+
+    def test_토큰이_없으면_401을_반환한다(self):
+        event = build_event(
+            "DELETE", "/history/33099281", path_parameters={"place_id": "33099281"}
+        )
+
+        result = web_api_handler.lambda_handler(event, None)
+
+        assert result["statusCode"] == 401
+
+    def test_정상이면_삭제하고_deleted_true를_반환한다(self):
+        with patch("web_store.delete_history_entry") as mock_delete:
+            result = web_api_handler.lambda_handler(
+                self._event("33099281", session_token()), None
+            )
+
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"])["deleted"] is True
+        mock_delete.assert_called_once_with(INVITE_IDENTITY, "33099281")
+
+    def test_place_id_형식이_틀리면_400을_반환한다(self):
+        with patch("web_store.delete_history_entry") as mock_delete:
+            result = web_api_handler.lambda_handler(
+                self._event("abc; DROP", session_token()), None
+            )
+
+        assert result["statusCode"] == 400
+        assert json.loads(result["body"])["error"] == "invalid place_id"
+        mock_delete.assert_not_called()
 
 
 class TestRouting:

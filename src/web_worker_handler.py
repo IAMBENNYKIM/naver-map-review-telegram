@@ -108,6 +108,11 @@ def _run_pipeline(
             updated_at=cached["updated_at"],
         )
         web_store.log_usage(identity, cache_hit=True)
+        # 조회 이력(보관함) 기록 + 초과분 정리(둘 다 비크리티컬).
+        web_store.record_history(
+            identity, place_id, cached["place_name"], cached["address"]
+        )
+        web_store.trim_history(identity)
         logger.info(
             "파이프라인 소요(place_id=%s, cache=%.2fs, 캐시 히트로 잡 완료)",
             place_id,
@@ -154,6 +159,9 @@ def _run_pipeline(
         updated_at=updated_at,
     )
     web_store.log_usage(identity, cache_hit=False)
+    # 조회 이력(보관함) 기록 + 초과분 정리(둘 다 비크리티컬).
+    web_store.record_history(identity, place_id, place_name, address)
+    web_store.trim_history(identity)
     save_seconds = time.monotonic() - save_started
     # 단계별 소요를 한 줄로 기록한다(PII 금지 — place_id·소요 시간만).
     logger.info(
