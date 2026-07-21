@@ -275,7 +275,9 @@ def _handle_result(event: dict) -> dict:
     elif status == "error":
         payload = {"status": "error", "error_message": job.get("error_message")}
     else:
-        payload = {"status": "processing"}
+        # 진행 중 잡은 세부 단계(stage)를 함께 노출한다(대기 중 현재 단계 표시).
+        # stage 필드가 없는 잡(구버전·전이 전)은 빈 문자열로 폴백한다.
+        payload = {"status": "processing", "stage": job.get("stage", "")}
 
     return _response(200, _to_jsonable(payload))
 

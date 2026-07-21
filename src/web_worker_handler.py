@@ -115,7 +115,8 @@ def _run_pipeline(
         )
         return
 
-    # 3) 캐시 미스 — 신규 수집·분석
+    # 3) 캐시 미스 — 신규 수집·분석. 폴링 노출용으로 단계 전이를 기록한다(비크리티컬).
+    web_store.update_job_stage(job_id, "collecting")
     collect_started = time.monotonic()
     place_detail = naver_review_collector.fetch_place_detail(place_id)
     review_list = naver_review_collector.fetch_reviews(
@@ -123,6 +124,7 @@ def _run_pipeline(
     )
     collect_seconds = time.monotonic() - collect_started
 
+    web_store.update_job_stage(job_id, "summarizing")
     llm_started = time.monotonic()
     summary_json = review_analyst.analyze_reviews(place_detail, review_list)
     llm_seconds = time.monotonic() - llm_started

@@ -700,6 +700,36 @@ class TestResult:
         assert result["statusCode"] == 200
         assert json.loads(result["body"])["status"] == "processing"
 
+    def test_processing_응답에_현재_단계를_포함한다(self):
+        # 진행 중 잡의 세부 단계(stage)가 폴링 응답에 노출된다.
+        job = {
+            "identity": INVITE_IDENTITY,
+            "status": "processing",
+            "stage": "collecting",
+        }
+        with patch("web_store.get_job", return_value=job):
+            result = web_api_handler.lambda_handler(
+                self._event("job-1", session_token()), None
+            )
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["status"] == "processing"
+        assert body["stage"] == "collecting"
+
+    def test_stage_필드가_없는_잡은_빈_문자열로_폴백한다(self):
+        # 구버전·전이 전 잡은 stage 필드가 없으므로 빈 문자열로 폴백한다.
+        job = {"identity": INVITE_IDENTITY, "status": "processing"}
+        with patch("web_store.get_job", return_value=job):
+            result = web_api_handler.lambda_handler(
+                self._event("job-1", session_token()), None
+            )
+
+        assert result["statusCode"] == 200
+        body = json.loads(result["body"])
+        assert body["status"] == "processing"
+        assert body["stage"] == ""
+
     def test_done_상태와_Decimal을_직렬화해_반환한다(self):
         job = {
             "identity": INVITE_IDENTITY,

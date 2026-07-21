@@ -46,6 +46,7 @@ def _patch_common(monkeypatch):
         "complete_job": MagicMock(),
         "fail_job": MagicMock(),
         "log_usage": MagicMock(),
+        "update_job_stage": MagicMock(),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(web_worker_handler.web_store, name, mock)
@@ -96,6 +97,8 @@ class TestCacheHit:
         # prod 캐시는 조회하지 않는다(web 히트로 조기 반환)
         mocks["get_prod_cached_summary"].assert_not_called()
         mocks["fail_job"].assert_not_called()
+        # 캐시 히트는 즉시 done이므로 단계 전이가 없다.
+        mocks["update_job_stage"].assert_not_called()
 
     def test_prod_캐시_히트면_web_캐시에_워밍하고_완료한다(self, monkeypatch):
         mocks = _patch_common(monkeypatch)
@@ -145,6 +148,20 @@ class TestFreshAnalysis:
 
         mocks["log_usage"].assert_called_once_with(IDENTITY, cache_hit=False)
         mocks["fail_job"].assert_not_called()
+
+    def test_캐시_미스면_collecting_summarizing_단계를_순서대로_전이한다(self, monkeypatch):
+        from unittest.mock import call
+
+        mocks = _patch_common(monkeypatch)
+        _patch_pipeline(monkeypatch)
+
+        web_worker_handler.lambda_handler(_event(), None)
+
+        # collecting(수집 직전) → summarizing(분석 직전) 순으로 단계를 갱신한다.
+        assert mocks["update_job_stage"].call_args_list == [
+            call(JOB_ID, "collecting"),
+            call(JOB_ID, "summarizing"),
+        ]
 
     def test_force_refresh면_캐시를_건너뛰고_신규_분석한다(self, monkeypatch):
         mocks = _patch_common(monkeypatch)

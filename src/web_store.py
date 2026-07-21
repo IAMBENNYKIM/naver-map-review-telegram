@@ -40,6 +40,10 @@ _STATUS_PROCESSING = "processing"
 _STATUS_DONE = "done"
 _STATUS_ERROR = "error"
 
+# 잡 진행 단계 상수 — processing 상태일 때 세부 단계를 /result 폴링에 노출한다.
+# cache_check(캐시 확인) → collecting(리뷰 수집) → summarizing(요약 생성) 순으로 전이한다.
+_STAGE_CACHE_CHECK = "cache_check"
+
 
 def _now_kst_iso() -> str:
     """현재 시각을 ISO 8601 KST 문자열로 반환한다."""
@@ -89,6 +93,7 @@ def create_job(
         {
             "job_id": job_id,
             "status": _STATUS_PROCESSING,
+            "stage": _STAGE_CACHE_CHECK,
             "identity": identity,
             "naver_url": naver_url,
             "place_id": place_id,
@@ -100,6 +105,28 @@ def create_job(
         _jobs_table().put_item(Item=item)
     except Exception as error:  # noqa: BLE001 (잡 생성 실패는 비크리티컬)
         logger.warning("잡 생성 실패(무시, job_id=%s): %s", job_id, error)
+
+
+def update_job_stage(job_id: str, stage: str) -> None:
+    """진행 중인 잡의 세부 단계(stage)를 갱신한다. 실패는 로깅만(비크리티컬).
+
+    processing 상태 잡의 현재 단계를 /result 폴링에 노출하기 위한 표시용 필드다.
+    단계 표시 실패가 분석 파이프라인을 막아서는 안 되므로, 어떤 예외도 흡수하고
+    warning 로깅만 한다(fail_job/complete_job과 동일한 비크리티컬 관례).
+    PII 최소화(제약 7): job_id·stage만 로깅하며 리뷰 본문 등은 다루지 않는다.
+    """
+    try:
+        _jobs_table().update_item(
+            Key={"job_id": job_id},
+            # "stage"는 DynamoDB 예약어이므로 ExpressionAttributeNames 별칭을 쓴다.
+            UpdateExpression="SET #stage = :stage",
+            ExpressionAttributeNames={"#stage": "stage"},
+            ExpressionAttributeValues={":stage": stage},
+        )
+    except Exception as error:  # noqa: BLE001 (단계 갱신 실패는 비크리티컬)
+        logger.warning(
+            "잡 단계 갱신 실패(무시, job_id=%s, stage=%s): %s", job_id, stage, error
+        )
 
 
 def get_job(job_id: str) -> dict | None:

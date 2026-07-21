@@ -54,6 +54,8 @@ class TestJobLifecycle:
         assert job is not None
         assert job["job_id"] == "job-1"
         assert job["status"] == "processing"
+        # 생성 직후 단계는 캐시 확인(cache_check)이다.
+        assert job["stage"] == "cache_check"
         assert job["identity"] == "친구A"
         assert job["naver_url"] == "https://naver.me/abc"
         assert "+09:00" in job["created_at"]
@@ -112,6 +114,39 @@ class TestJobLifecycle:
 
 
 # ---------------------------------------------------------------------------
+# 진행 단계 갱신 (update_job_stage) — 폴링 노출용
+# ---------------------------------------------------------------------------
+class TestUpdateJobStage:
+    def test_단계를_갱신하면_stage_필드가_바뀐다(self, web_tables):
+        web_store.create_job("job-stage", "친구A", "https://naver.me/abc")
+
+        web_store.update_job_stage("job-stage", "collecting")
+
+        job = web_store.get_job("job-stage")
+        assert job["stage"] == "collecting"
+        # 다른 필드(상태·소유자)는 보존된다.
+        assert job["status"] == "processing"
+        assert job["identity"] == "친구A"
+
+    def test_연속_전이를_반영한다(self, web_tables):
+        web_store.create_job("job-flow", "친구A", "https://naver.me/abc")
+
+        web_store.update_job_stage("job-flow", "collecting")
+        web_store.update_job_stage("job-flow", "summarizing")
+
+        job = web_store.get_job("job-flow")
+        assert job["stage"] == "summarizing"
+
+    def test_갱신_실패는_예외를_전파하지_않는다(self):
+        with patch.object(
+            web_store, "_jobs_table", side_effect=RuntimeError("연결 실패")
+        ), patch.object(web_store.logger, "warning") as mock_warning:
+            web_store.update_job_stage("job-x", "collecting")
+        # 단계 표시 실패는 비크리티컬 — 경고 로깅만 하고 흡수한다.
+        mock_warning.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # 완료 잡 직접 생성 (캐시 히트 직결)
 # ---------------------------------------------------------------------------
 class TestCreateCompletedJob:
@@ -166,8 +201,12 @@ class TestCreateCompletedJob:
         )
         direct = web_store.get_job("job-direct")
 
-        # /result가 읽는 필드를 포함해 아이템 필드 집합이 완전히 동일해야 한다.
-        assert set(direct.keys()) == set(legacy.keys())
+        # /result가 읽는 필드를 포함해 아이템 필드 집합이 동일해야 한다.
+        # stage는 processing 전용 임시 필드다 — 레거시 경로는 create_job이 남긴
+        # stage("cache_check")를 done 이후에도 보유하지만(complete_job이 지우지 않음),
+        # /result done 응답은 stage를 읽지 않으므로 무해하다. 따라서 키 집합 비교에서
+        # stage를 제외해 "동일 아이템 형태" 불변식의 본래 의도(진짜 노출 필드)를 지킨다.
+        assert set(direct.keys()) - {"stage"} == set(legacy.keys()) - {"stage"}
         assert direct["cache_hit"] is True
         assert legacy["cache_hit"] is True
         # /result 응답 필드가 두 경로에서 동일한 값이다.
