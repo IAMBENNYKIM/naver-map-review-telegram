@@ -2,16 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { ApiError, fetchResult, requestAnalyze } from "@/lib/api";
-import type { AnalysisResult, AnalysisTarget } from "@/lib/types";
-
-// 초기 폴링 백오프(ms) — 1회차 전 250ms, 2회차 전 750ms로 앞당겨
-// 캐시 히트 시 첫 조회를 빠르게 한다. 3회차부터는 POLL_INTERVAL_MS로 정속.
-const POLL_DELAYS_MS = [250, 750];
-/** 정속 폴링 간격(ms). 백오프 소진 후 매회 적용. */
-const POLL_INTERVAL_MS = 1500;
-// 최대 시도 횟수 — 총 폴링 예산 250 + 750 + 39×1500 = 59,500ms(약 59.5초, 현행 60초 유지).
-const MAX_POLL_ATTEMPTS = 41;
+import { runAnalysisToCompletion } from "@/lib/analysis-runner";
+import type { AnalysisResult, AnalysisStage, AnalysisTarget } from "@/lib/types";
 
 /** 분석 실행 단계. */
 export type AnalysisPhase =
@@ -32,6 +24,8 @@ interface UseAnalysisApi {
   phase: AnalysisPhase;
   result: AnalysisResult | null;
   errorText: string | null;
+  /** 폴링 중 진행 단계. processing 세부 단계이며 그 외에는 null. */
+  stage: AnalysisStage | null;
   /** 갱신(강제 재분석) 진행 여부. */
   isRefreshing: boolean;
   /** 대상(네이버 URL 또는 place_id)으로 분석을 실행한다. */
@@ -43,13 +37,10 @@ interface UseAnalysisApi {
   refresh: () => void;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
- * 분석 요청 → 결과 폴링 → 상태 반영 로직을 담은 훅.
- * URL 폼과 검색 후보 선택이 공통으로 사용한다 (동작은 종전과 동일).
+ * 분석 요청 → 결과 폴링 → 상태 반영을 담은 훅.
+ * 요청·폴링 본체는 순수 실행기(runAnalysisToCompletion)에 위임하고,
+ * 이 훅은 React 상태 반영과 세대 무효화만 담당한다 (동작은 종전과 동일).
  */
 export function useAnalysis({
   token,
@@ -58,6 +49,8 @@ export function useAnalysis({
   const [phase, setPhase] = useState<AnalysisPhase>("idle");
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [errorText, setErrorText] = useState<string | null>(null);
+  // 폴링 중 진행 단계 — 상태 패널의 단계 체크리스트에 쓰인다.
+  const [stage, setStage] = useState<AnalysisStage | null>(null);
   // 갱신(강제 재분석) 진행 여부 — 결과 카드의 갱신 버튼을 잠근다.
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -92,6 +85,7 @@ export function useAnalysis({
     lastTargetRef.current = target;
 
     setErrorText(null);
+    setStage(null);
     if (isRefresh) {
       // 갱신은 기존 결과 카드를 유지한 채 버튼만 잠근다.
       setIsRefreshing(true);
@@ -101,91 +95,49 @@ export function useAnalysis({
       setPhase("submitting");
     }
 
-    let jobId: string;
-    try {
-      jobId = await requestAnalyze(token, target, isRefresh);
-    } catch (error) {
-      if (runIdRef.current !== runId) {
-        return; // 더 최신 요청이 시작됨.
-      }
-      if (error instanceof ApiError && error.isUnauthorized) {
-        setIsRefreshing(false);
-        handleSessionExpired();
-        return;
-      }
-      setErrorText(
-        error instanceof ApiError
-          ? error.message
-          : "분석 요청에 실패했어요. 잠시 후 다시 시도해 주세요.",
-      );
-      setPhase("error");
-      setIsRefreshing(false);
-      return;
-    }
+    const outcome = await runAnalysisToCompletion(token, target, {
+      forceRefresh: isRefresh,
+      isCancelled: () => runIdRef.current !== runId,
+      onStage: (nextStage) => {
+        if (runIdRef.current !== runId) {
+          return; // 더 최신 요청이 시작됨.
+        }
+        // 갱신은 기존 done 카드를 유지하므로 phase를 바꾸지 않는다.
+        if (!isRefresh) {
+          setPhase("polling");
+        }
+        setStage(nextStage);
+      },
+    });
 
     if (runIdRef.current !== runId) {
       return; // 더 최신 요청이 시작됨.
     }
-    if (!isRefresh) {
-      setPhase("polling");
-    }
 
-    for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt += 1) {
-      // 앞 2회는 백오프(250ms·750ms), 이후는 정속(1500ms)으로 대기한다.
-      const currentDelayMs = POLL_DELAYS_MS[attempt] ?? POLL_INTERVAL_MS;
-      await delay(currentDelayMs);
-      if (runIdRef.current !== runId) {
-        return; // 취소됨.
-      }
-
-      let latest: AnalysisResult;
-      try {
-        latest = await fetchResult(token, jobId);
-      } catch (error) {
-        if (runIdRef.current !== runId) {
-          return;
-        }
-        if (error instanceof ApiError && error.isUnauthorized) {
-          setIsRefreshing(false);
-          handleSessionExpired();
-          return;
-        }
-        // 404 를 포함한 일시 오류는 폴링을 이어간다 (job 준비 지연 대비).
-        if (error instanceof ApiError && error.status === 404) {
-          continue;
-        }
-        setErrorText(
-          error instanceof ApiError
-            ? error.message
-            : "결과 조회 중 오류가 발생했어요.",
-        );
-        setPhase("error");
+    switch (outcome.kind) {
+      case "cancelled":
+        return;
+      case "unauthorized":
         setIsRefreshing(false);
+        handleSessionExpired();
         return;
-      }
-
-      if (runIdRef.current !== runId) {
-        return;
-      }
-
-      if (latest.status === "done") {
-        setResult(latest);
+      case "done":
+        setResult(outcome.result);
+        setStage(null);
         setPhase("done");
         setIsRefreshing(false);
         return;
-      }
-      if (latest.status === "error") {
-        setErrorText(latest.errorMessage ?? "분석에 실패했어요.");
+      case "error":
+        setErrorText(outcome.errorText);
+        setStage(null);
         setPhase("error");
         setIsRefreshing(false);
         return;
-      }
-      // status === "processing" → 계속 폴링.
-    }
-
-    if (runIdRef.current === runId) {
-      setPhase("timeout");
-      setIsRefreshing(false);
+      case "timeout":
+        setStage(null);
+        setPhase("timeout");
+        setIsRefreshing(false);
+        return;
     }
   }
 
@@ -203,5 +155,13 @@ export function useAnalysis({
     void execute(lastTargetRef.current, { forceRefresh: true });
   }
 
-  return { phase, result, errorText, isRefreshing, runAnalysis, refresh };
+  return {
+    phase,
+    result,
+    errorText,
+    stage,
+    isRefreshing,
+    runAnalysis,
+    refresh,
+  };
 }

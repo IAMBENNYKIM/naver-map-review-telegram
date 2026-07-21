@@ -53,11 +53,20 @@ export interface PlaceSearchResult {
 export type AnalysisStatus = "processing" | "done" | "error";
 
 /**
+ * 분석 진행 단계 (processing 상태의 세부 단계).
+ * `GET /result` 응답의 stage 필드에서 이 3값만 유효하며,
+ * 빈 문자열·미지 값·부재는 프론트에서 null로 방어 매핑한다.
+ */
+export type AnalysisStage = "cache_check" | "collecting" | "summarizing";
+
+/**
  * `GET /result/{job_id}` 응답을 camelCase로 매핑한 도메인 모델.
  * done 상태일 때만 장소 정보와 요약이 채워진다.
  */
 export interface AnalysisResult {
   status: AnalysisStatus;
+  /** processing 중 세부 진행 단계. 미지 값·부재 시 null. */
+  stage: AnalysisStage | null;
   /** 파싱에 성공한 요약. 파싱 실패 시 null 이며 rawSummaryJson 로 폴백한다. */
   summary: ReviewSummary | null;
   /** 파싱 실패 대비 원문 문자열. */

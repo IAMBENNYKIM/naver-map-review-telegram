@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Search, AlertCircle, Clock, MapPin, ChevronRight } from "lucide-react";
+import { Search, AlertCircle, MapPin, ChevronRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { ResultCard } from "@/components/ResultCard";
+import { AnalysisStatusPanel } from "@/components/AnalysisStatusPanel";
 import { useAnalysis } from "@/hooks/useAnalysis";
 import { ApiError, searchPlaces } from "@/lib/api";
 import type { PlaceCandidate } from "@/lib/types";
@@ -38,7 +38,7 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
   // 현재 분석 중인 후보 — 선택된 카드를 강조하기 위해 보관한다.
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
 
-  const { phase, result, errorText, isRefreshing, runAnalysis, refresh } =
+  const { phase, result, errorText, stage, isRefreshing, runAnalysis, refresh } =
     useAnalysis({ token, onSessionExpired });
 
   const isSearching = searchPhase === "searching";
@@ -195,41 +195,15 @@ export function SearchView({ token, onSessionExpired }: SearchViewProps) {
         )
       ) : null}
 
-      {/* 분석 상태 (후보 선택 후) */}
-      {phase === "polling" ? (
-        <Card>
-          <CardContent className="flex items-center gap-3 text-sm text-muted">
-            <Spinner className="h-5 w-5 text-accent" />
-            <span>
-              리뷰를 수집하고 요약하는 중이에요. 최대 1분 정도 걸릴 수 있어요.
-            </span>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {phase === "timeout" ? (
-        <Card>
-          <CardContent className="flex items-start gap-3 text-sm">
-            <Clock className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" aria-hidden="true" />
-            <span>
-              시간이 조금 오래 걸리고 있어요. 잠시 후 같은 장소로 다시 시도해 주세요.
-            </span>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {phase === "error" && errorText ? (
-        <Card>
-          <CardContent className="flex items-start gap-3 text-sm text-rose-600 dark:text-rose-400">
-            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden="true" />
-            <span role="alert">{errorText}</span>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {phase === "done" && result ? (
-        <ResultCard result={result} onRefresh={refresh} isRefreshing={isRefreshing} />
-      ) : null}
+      {/* 분석 상태 (후보 선택 후 — 폴링·타임아웃·오류·결과) */}
+      <AnalysisStatusPanel
+        phase={phase}
+        stage={stage}
+        result={result}
+        errorText={errorText}
+        isRefreshing={isRefreshing}
+        onRefresh={refresh}
+      />
     </div>
   );
 }

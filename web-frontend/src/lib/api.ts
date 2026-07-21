@@ -7,6 +7,7 @@
 
 import type {
   AnalysisResult,
+  AnalysisStage,
   AnalysisTarget,
   DailyUsage,
   PlaceCandidate,
@@ -195,6 +196,8 @@ export async function searchPlaces(
 /** 백엔드가 내려주는 `GET /result` 원본 응답(snake_case). */
 interface RawResultResponse {
   status: "processing" | "done" | "error";
+  /** processing 중 세부 단계. 3값 외(빈 문자열·미지 값·부재)는 null로 매핑한다. */
+  stage?: string;
   summary_json?: string;
   place_name?: string;
   address?: string;
@@ -235,6 +238,21 @@ export function parseSummaryJson(raw: string | undefined): ReviewSummary | null 
   } catch {
     return null;
   }
+}
+
+/**
+ * 응답의 stage 값을 유효한 3단계로만 좁힌다.
+ * 빈 문자열·미지 값·부재는 null로 방어 매핑한다.
+ */
+function toAnalysisStage(value: unknown): AnalysisStage | null {
+  if (
+    value === "cache_check" ||
+    value === "collecting" ||
+    value === "summarizing"
+  ) {
+    return value;
+  }
+  return null;
 }
 
 function toStringArray(value: unknown): string[] {
@@ -287,6 +305,7 @@ export async function fetchResult(
 
   return {
     status: raw.status,
+    stage: toAnalysisStage(raw.stage),
     summary: parseSummaryJson(raw.summary_json),
     rawSummaryJson: raw.summary_json ?? null,
     placeName: raw.place_name ?? null,
